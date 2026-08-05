@@ -1,0 +1,36 @@
+{
+  "name": "pdf-maniac",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run server\" \"vite\"",
+    "server": "node server/index.js",
+    "dev:all": "npm run dev",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@napi-rs/canvas": "^1.0.3",
+    "@supabase/supabase-js": "^2.112.1",
+    "@vitejs/plugin-react": "latest",
+    "cors": "latest",
+    "docx": "^9.7.1",
+    "dotenv": "latest",
+    "exceljs": "^4.4.0",
+    "express": "latest",
+    "lucide-react": "latest",
+    "multer": "latest",
+    "openai": "latest",
+    "pdf-lib": "^1.17.1",
+    "pdfjs-dist": "^6.2.108",
+    "pptxgenjs": "^4.0.1",
+    "react": "latest",
+    "react-dom": "latest",
+    "tesseract.js": "^7.0.0",
+    "vite": "latest"
+  },
+  "devDependencies": {
+    "concurrently": "latest"
+  }
+}

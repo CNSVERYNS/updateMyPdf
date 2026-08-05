@@ -1,0 +1,1064 @@
+import React, { useEffect, useMemo, useRef, useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import {
+  ArrowUp,
+  Bot,
+  Check,
+  ChevronDown,
+  Cloud,
+  CloudUpload,
+  Download,
+  FilePlus2,
+  FileText,
+  GitCompareArrows,
+  History,
+  Highlighter,
+  ImagePlus,
+  Link2,
+  LoaderCircle,
+  ListChecks,
+  LogIn,
+  LogOut,
+  MessageSquareText,
+  MoreHorizontal,
+  PanelRight,
+  PenLine,
+  RotateCcw,
+  Search,
+  Sparkles,
+  Split,
+  Trash2,
+  Upload,
+  X,
+  ZoomIn,
+  ZoomOut,
+} from 'lucide-react'
+import { supabase, supabaseConfigured } from './supabase'
+import './styles.css'
+
+const starterPrompts = [
+  { icon: Highlighter, label: 'Önemli yerleri işaretle', prompt: 'Önemli cümleleri sarı renkle işaretle.' },
+  { icon: FileText, label: 'Özet çıkar', prompt: 'Bu PDF için kısa bir özet hazırla.' },
+  { icon: Split, label: 'Sayfaları düzenle', prompt: 'Son sayfayı sil.' },
+]
+
+const initialMessages = [
+  {
+    id: 1,
+    role: 'assistant',
+    text: 'Merhaba! PDF’in üzerinde ne yapmak istediğini yazabilirsin. Değişiklikleri sağdaki önizlemede anlık olarak göstereceğim.',
+  },
+]
+
+const decodePdfFile = (base64, filename) => {
+  const binary = window.atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  return new File([bytes], filename, { type: 'application/pdf' })
+}
+
+const downloadBase64File = (base64, filename, mimeType) => {
+  const binary = window.atob(base64)
+  const bytes = new Uint8Array(binary.length)
+  for (let index = 0; index < binary.length; index += 1) bytes[index] = binary.charCodeAt(index)
+  const url = URL.createObjectURL(new Blob([bytes], { type: mimeType }))
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+}
+
+function App() {
+  const [file, setFile] = useState(null)
+  const [originalFile, setOriginalFile] = useState(null)
+  const [pdfTitle, setPdfTitle] = useState('')
+  const [fileUrl, setFileUrl] = useState('')
+  const [messages, setMessages] = useState(initialMessages)
+  const [input, setInput] = useState('')
+  const [isThinking, setIsThinking] = useState(false)
+  const [aiStatus, setAiStatus] = useState('idle')
+  const [pageCount, setPageCount] = useState(0)
+  const [currentPage, setCurrentPage] = useState(1)
+  const [zoom, setZoom] = useState(100)
+  const [activeTool, setActiveTool] = useState('select')
+  const [changes, setChanges] = useState([])
+  const [showHistory, setShowHistory] = useState(false)
+  const [showCapabilities, setShowCapabilities] = useState(false)
+  const [capabilitySummary, setCapabilitySummary] = useState(null)
+  const [comparison, setComparison] = useState(null)
+  const [showComparison, setShowComparison] = useState(false)
+  const [isComparing, setIsComparing] = useState(false)
+  const [isMerging, setIsMerging] = useState(false)
+  const [session, setSession] = useState(null)
+  const [showAuth, setShowAuth] = useState(false)
+  const [authMode, setAuthMode] = useState('login')
+  const [authBusy, setAuthBusy] = useState(false)
+  const [authError, setAuthError] = useState('')
+  const [toast, setToast] = useState(null)
+  const [cloudFiles, setCloudFiles] = useState([])
+  const [showCloudFiles, setShowCloudFiles] = useState(false)
+  const [isCloudSaving, setIsCloudSaving] = useState(false)
+  const [currentCloudPath, setCurrentCloudPath] = useState('')
+  const [showSignatureRequest, setShowSignatureRequest] = useState(false)
+  const [showSignatureRequests, setShowSignatureRequests] = useState(false)
+  const [signatureRequestBusy, setSignatureRequestBusy] = useState(false)
+  const [signatureRequestError, setSignatureRequestError] = useState('')
+  const [signatureRequestResult, setSignatureRequestResult] = useState(null)
+  const [imageFile, setImageFile] = useState(null)
+  const [isDragging, setIsDragging] = useState(false)
+  const fileInputRef = useRef(null)
+  const compareInputRef = useRef(null)
+  const mergeInputRef = useRef(null)
+  const imageInputRef = useRef(null)
+  const chatEndRef = useRef(null)
+
+  useEffect(() => {
+    return () => {
+      if (fileUrl) URL.revokeObjectURL(fileUrl)
+    }
+  }, [fileUrl])
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [messages, isThinking])
+
+  useEffect(() => {
+    fetch('/api/capabilities')
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => setCapabilitySummary(data))
+      .catch(() => setCapabilitySummary(null))
+  }, [])
+
+  useEffect(() => {
+    if (!supabase) return undefined
+    let mounted = true
+    supabase.auth.getSession().then(({ data }) => {
+      if (mounted) setSession(data.session)
+    })
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession)
+    })
+    return () => {
+      mounted = false
+      listener.subscription.unsubscribe()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!toast) return undefined
+    const timeout = window.setTimeout(() => setToast(null), 5200)
+    return () => window.clearTimeout(timeout)
+  }, [toast])
+
+  const authHeaders = () => session?.access_token ? { Authorization: `Bearer ${session.access_token}` } : {}
+
+  const loadCloudFiles = async () => {
+    if (!session) return
+    const result = await fetch('/api/storage/files', { headers: authHeaders() })
+    const data = await result.json().catch(() => ({}))
+    if (!result.ok) throw new Error(data.error || 'Cloud dosyaları okunamadı.')
+    setCloudFiles(data.files || [])
+  }
+
+  const handleAuthSubmit = async ({ email, password, fullName }) => {
+    if (!supabase) return
+    setAuthBusy(true)
+    setAuthError('')
+    try {
+      const result = authMode === 'signup'
+        ? await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName?.trim() || email } } })
+        : await supabase.auth.signInWithPassword({ email, password })
+      if (result.error) throw result.error
+      if (authMode === 'signup' && !result.data.session) {
+        setShowAuth(false)
+        setToast({ tone: 'success', text: 'Hesabın oluşturuldu. E-posta kutunu kontrol edip doğrulama bağlantısına tıkla.' })
+        return
+      }
+      setShowAuth(false)
+      setAuthError('')
+      setToast({ tone: 'success', text: 'Cloud hesabına başarıyla giriş yaptın.' })
+      setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: 'Cloud hesabına giriş yaptın. PDF’lerini güvenli bucket’a kaydedebilirsin.' }])
+    } catch (error) {
+      setAuthError(error.message || 'Giriş işlemi başarısız oldu.')
+    } finally {
+      setAuthBusy(false)
+    }
+  }
+
+  const signOut = async () => {
+    await supabase?.auth.signOut()
+    setCloudFiles([])
+    setShowCloudFiles(false)
+    setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: 'Cloud hesabından çıkış yaptın.' }])
+  }
+
+  const uploadCurrentToCloud = async () => {
+    if (!file) throw new Error('Önce bir PDF yüklemelisin.')
+    if (!session) {
+      setShowAuth(true)
+      throw new Error('Önce Cloud hesabına giriş yapmalısın.')
+    }
+    const formData = new FormData()
+    formData.append('file', file)
+    const result = await fetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: formData })
+    const data = await result.json().catch(() => ({}))
+    if (!result.ok) throw new Error(data.error || 'PDF cloud’a yüklenemedi.')
+    setCurrentCloudPath(data.path || '')
+    return data
+  }
+
+  const saveCurrentToCloud = async () => {
+    if (!file) return
+    if (!session) {
+      setShowAuth(true)
+      return
+    }
+    setIsCloudSaving(true)
+    try {
+      const formData = new FormData()
+      formData.append('file', file)
+      const result = await fetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: formData })
+      const data = await result.json().catch(() => ({}))
+      if (!result.ok) throw new Error(data.error || 'PDF cloud’a yüklenemedi.')
+      setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: 'PDF private cloud storage’a kaydedildi.' }])
+      await loadCloudFiles()
+    } catch (error) {
+      setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: error.message || 'Cloud kaydı başarısız oldu.' }])
+    } finally {
+      setIsCloudSaving(false)
+    }
+  }
+
+  const openSignatureRequest = () => {
+    if (!file) {
+      setToast({ tone: 'error', text: 'İmza talebi göndermek için önce bir PDF yükle.' })
+      return
+    }
+    if (!session) {
+      setAuthMode('login')
+      setShowAuth(true)
+      return
+    }
+    setSignatureRequestError('')
+    setSignatureRequestResult(null)
+    setShowSignatureRequest(true)
+  }
+
+  const createSignatureRequest = async (details) => {
+    if (!file || !session) return
+    setSignatureRequestBusy(true)
+    setSignatureRequestError('')
+    try {
+      const documentPath = (await uploadCurrentToCloud()).path
+      const result = await fetch('/api/signatures/request', {
+        method: 'POST',
+        headers: { ...authHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          documentPath,
+          documentName: file.name,
+          recipientEmail: details.recipientEmail,
+          recipientName: details.recipientName,
+          message: details.message,
+          workflowType: details.workflowType,
+          expiresIn: details.expiresIn,
+          signaturePlacement: details.signaturePlacement,
+        }),
+      })
+      const data = await result.json().catch(() => ({}))
+      if (!result.ok) throw new Error(data.error || 'İmza isteği oluşturulamadı.')
+      setSignatureRequestResult(data)
+      setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: `${details.workflowType === 'review' ? 'İnceleme' : 'İmza'} isteği e-posta ile gönderildi.` }])
+      await loadCloudFiles()
+    } catch (error) {
+      setSignatureRequestError(error.message || 'İmza isteği oluşturulamadı.')
+    } finally {
+      setSignatureRequestBusy(false)
+    }
+  }
+
+  const openCloudFiles = async () => {
+    if (!session) {
+      setShowAuth(true)
+      return
+    }
+    try {
+      await loadCloudFiles()
+      setShowCloudFiles(true)
+    } catch (error) {
+      setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: error.message || 'Cloud dosyaları okunamadı.' }])
+    }
+  }
+
+  const downloadCloudFile = async (cloudFile) => {
+    if (!cloudFile.signedUrl) return
+    const result = await fetch(cloudFile.signedUrl)
+    const blob = await result.blob()
+    setPdf(new File([blob], cloudFile.name, { type: 'application/pdf' }))
+    setShowCloudFiles(false)
+  }
+
+  const deleteCloudFile = async (cloudFile) => {
+    const result = await fetch('/api/storage/files', { method: 'DELETE', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ path: cloudFile.path }) })
+    const data = await result.json().catch(() => ({}))
+    if (!result.ok) throw new Error(data.error || 'Cloud dosyası silinemedi.')
+    setCloudFiles((current) => current.filter((fileItem) => fileItem.path !== cloudFile.path))
+  }
+
+  const shareCloudFile = async (cloudFile) => {
+    const result = await fetch('/api/storage/share', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ path: cloudFile.path, expiresIn: 86400 }) })
+    const data = await result.json().catch(() => ({}))
+    if (!result.ok) throw new Error(data.error || 'PaylaÅŸÄ±m baÄŸlantÄ±sÄ± oluÅŸturulamadÄ±.')
+    await navigator.clipboard?.writeText(data.signedUrl)
+    setToast({ tone: 'success', text: '24 saatlik gÃ¼venli paylaÅŸÄ±m baÄŸlantÄ±sÄ± panoya kopyalandÄ±.' })
+  }
+
+  const activeChange = changes[changes.length - 1]
+  const documentTitle = pdfTitle || file?.name || 'Untitled document'
+  const visiblePageNumbers = useMemo(() => {
+    const totalPages = pageCount || 1
+    const visibleCount = Math.min(totalPages, 8)
+    const startPage = totalPages <= 8 ? 1 : Math.min(Math.max(currentPage - 3, 1), totalPages - visibleCount + 1)
+    return Array.from({ length: visibleCount }, (_item, index) => startPage + index)
+  }, [currentPage, pageCount])
+
+  const setPdf = (selectedFile) => {
+    if (!selectedFile || selectedFile.type !== 'application/pdf') return
+    if (fileUrl) URL.revokeObjectURL(fileUrl)
+    setFile(selectedFile)
+    setOriginalFile(selectedFile)
+    setPdfTitle(selectedFile.name)
+    setFileUrl(URL.createObjectURL(selectedFile))
+    setPageCount(0)
+    setCurrentPage(1)
+    const infoFormData = new FormData()
+    infoFormData.append('file', selectedFile)
+    fetch('/api/pdf/info', { method: 'POST', body: infoFormData })
+      .then((response) => response.ok ? response.json() : null)
+      .then((data) => { if (data?.pageCount) setPageCount(data.pageCount); if (data?.title) setPdfTitle(data.title) })
+      .catch(() => {})
+    setMessages([
+      ...initialMessages,
+      {
+        id: Date.now(),
+        role: 'assistant',
+        text: `${selectedFile.name} hazır. Bu dosya üzerinde nasıl bir değişiklik yapmamı istersin?`,
+      },
+    ])
+    setChanges([])
+  }
+
+  const handleFileChange = (event) => setPdf(event.target.files?.[0])
+
+  const handleImageChange = (event) => {
+    const selectedImage = event.target.files?.[0]
+    event.target.value = ''
+    if (!selectedImage || !['image/png', 'image/jpeg'].includes(selectedImage.type)) return
+    setImageFile(selectedImage)
+    setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: `${selectedImage.name} eklendi. Görseli PDF’e nereye ve nasıl ekleyeceğini yazabilirsin.` }])
+  }
+
+  const handleCompareFile = async (event) => {
+    const secondFile = event.target.files?.[0]
+    event.target.value = ''
+    if (!secondFile || secondFile.type !== 'application/pdf') return
+    if (!file) {
+      setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: 'Karşılaştırma için önce ana PDF’i yüklemelisin.' }])
+      return
+    }
+    setIsComparing(true)
+    try {
+      const formData = new FormData()
+      formData.append('files', file)
+      formData.append('files', secondFile)
+      const result = await fetch('/api/pdf/compare', { method: 'POST', body: formData })
+      const rawResponse = await result.text()
+      const data = rawResponse ? JSON.parse(rawResponse) : {}
+      if (!result.ok) throw new Error(data.error || 'PDF karşılaştırılamadı.')
+      setComparison({ fileName: secondFile.name, ...data })
+      setShowComparison(true)
+    } catch (error) {
+      setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: error.message || 'PDF karşılaştırılamadı.' }])
+    } finally {
+      setIsComparing(false)
+    }
+  }
+
+  const handleMergeFiles = async (event) => {
+    const selectedFiles = Array.from(event.target.files || []).filter((item) => item.type === 'application/pdf')
+    event.target.value = ''
+    if (!file) {
+      setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: 'Birleştirme için önce ana PDF’i yüklemelisin.' }])
+      return
+    }
+    if (!selectedFiles.length) return
+    setIsMerging(true)
+    try {
+      const formData = new FormData()
+      formData.append('files', file)
+      selectedFiles.forEach((selectedFile) => formData.append('files', selectedFile))
+      const result = await fetch('/api/pdf/merge', { method: 'POST', body: formData })
+      if (!result.ok) {
+        const data = await result.json().catch(() => ({}))
+        throw new Error(data.error || 'PDF’ler birleştirilemedi.')
+      }
+      const mergedBlob = await result.blob()
+      const mergedFile = new File([mergedBlob], `${file.name.replace(/\.pdf$/i, '')}-merged.pdf`, { type: 'application/pdf' })
+      setPdf(mergedFile)
+      setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: `${selectedFiles.length + 1} PDF tek dosyada birleştirildi.` }])
+    } catch (error) {
+      setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: error.message || 'PDF’ler birleştirilemedi.' }])
+    } finally {
+      setIsMerging(false)
+    }
+  }
+
+  const processPrompt = (prompt) => {
+    const normalized = prompt.toLocaleLowerCase('tr-TR')
+    if (normalized.includes('özet')) {
+      return {
+        title: 'PDF özeti hazırlandı',
+        description: 'Belgenin ana noktaları sağdaki önizleme alanına eklendi.',
+        badge: 'Özet',
+        detail: 'Belge; amaç, kapsam ve sonraki adımlar başlıkları altında özetlendi.',
+      }
+    }
+    if (normalized.includes('işaret') || normalized.includes('vurgula') || normalized.includes('sarı')) {
+      return {
+        title: 'Önemli bölümler işaretlendi',
+        description: 'Önemli cümleler sarı renkle vurgulandı.',
+        badge: 'Highlight',
+        detail: '3 önemli bölüm bulundu ve sarı highlight olarak eklendi.',
+      }
+    }
+    if (normalized.includes('sil') || normalized.includes('kaldır')) {
+      return {
+        title: 'Sayfa değişikliği hazır',
+        description: 'İstediğin sayfa değişikliği preview için hazırlandı.',
+        badge: 'Sayfa düzeni',
+        detail: 'Son sayfa kaldırılmak üzere işaretlendi.',
+      }
+    }
+    if (normalized.includes('çevir') || normalized.includes('ingiliz')) {
+      return {
+        title: 'Çeviri taslağı hazırlandı',
+        description: 'Metin çevirisi preview üzerinde gösteriliyor.',
+        badge: 'Çeviri',
+        detail: 'Belgenin dili algılandı ve çeviri taslağı oluşturuldu.',
+      }
+    }
+    return {
+      title: 'Değişiklik önerisi hazır',
+      description: 'İsteğin analiz edildi ve düzenleme preview’e uygulandı.',
+      badge: 'AI düzenlemesi',
+      detail: 'Bu komut için güvenli bir düzenleme akışı oluşturuldu.',
+    }
+  }
+
+  const submitPrompt = async (prompt = input) => {
+    const cleanPrompt = prompt.trim()
+    if (!cleanPrompt || isThinking) return
+    const nextUserMessage = { id: Date.now(), role: 'user', text: cleanPrompt }
+    setMessages((current) => [...current, nextUserMessage])
+    setInput('')
+    setIsThinking(true)
+
+    if (!file) {
+      setMessages((current) => [
+        ...current,
+        { id: Date.now() + 1, role: 'assistant', text: 'Gerçek AI düzenlemesi için önce bir PDF yüklemelisin.' },
+      ])
+      setIsThinking(false)
+      return
+    }
+
+    try {
+      const formData = new FormData()
+      formData.append('prompt', cleanPrompt)
+      formData.append('file', file)
+      if (imageFile) formData.append('image', imageFile)
+      const result = await fetch('/api/ai/command', { method: 'POST', body: formData })
+      const rawResponse = await result.text()
+      let data = {}
+      try {
+        data = rawResponse ? JSON.parse(rawResponse) : {}
+      } catch {
+        throw new Error(`Backend geçerli bir JSON cevabı döndürmedi (${result.status}). API sunucusunun çalıştığından emin ol.`)
+      }
+      if (!result.ok) throw new Error(data.error || 'AI isteği başarısız oldu.')
+
+      const firstAction = data.actions?.[0]
+      const actionLabel = firstAction?.type ? firstAction.type.replaceAll('_', ' ') : 'AI planı'
+      const editedFile = data.editedPdf ? decodePdfFile(data.editedPdf, file.name) : null
+      if (editedFile) {
+        if (fileUrl) URL.revokeObjectURL(fileUrl)
+        setFile(editedFile)
+        setFileUrl(URL.createObjectURL(editedFile))
+        const titleAction = data.actions?.find((action) => action.type === 'set_title' && action.title)
+        if (titleAction?.title) setPdfTitle(titleAction.title)
+        setPageCount(0)
+        const infoFormData = new FormData()
+        infoFormData.append('file', editedFile)
+        fetch('/api/pdf/info', { method: 'POST', body: infoFormData })
+          .then((response) => response.ok ? response.json() : null)
+          .then((info) => { if (info?.pageCount) { setPageCount(info.pageCount); setCurrentPage((current) => Math.min(current, info.pageCount)) }; if (info?.title) setPdfTitle(info.title) })
+          .catch(() => {})
+      }
+      if (imageFile) setImageFile(null)
+      const officeExports = data.officeExports || []
+      officeExports.forEach((officeFile) => downloadBase64File(officeFile.data, officeFile.fileName, officeFile.format === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : officeFile.format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/vnd.openxmlformats-officedocument.presentationml.presentation'))
+      if (data.audioOverview?.data) downloadBase64File(data.audioOverview.data, data.audioOverview.fileName || 'audio-overview.mp3', 'audio/mpeg')
+      const appliedCount = data.appliedActions?.filter((action) => action.applied && !['detect_form_fields', 'export_form_data', 'measure', 'accessibility_check', 'extract_data', 'extract_table', 'document_citations'].includes(action.type)).length || 0
+      const analysisNotice = data.analysis?.length
+        ? `\n\n${data.analysis.map((item) => item.fields ? `Form alanları: ${item.fields.map((field) => `${field.name}=${field.value ?? ''}`).join(', ') || 'bulunamadı'}` : item.measurements ? `Ölçüm: ${item.measurements.map((measurement) => `S${measurement.page} ${measurement.width}×${measurement.height}pt`).join(', ')}` : item.report ? `Erişilebilirlik: ${item.report.textPages}/${item.report.pageCount} sayfada metin var; başlık ${item.report.titlePresent ? 'mevcut' : 'eksik'}.` : item.data ? `Çıkarılan veri: ${JSON.stringify(item.data.data).slice(0, 3000)}` : item.table ? `Tablo: ${item.table.rowCount} satır\n${item.table.rows.slice(0, 30).map((row) => `S${row.page}: ${row.cells.join(' | ')}`).join('\n')}` : item.citations ? `Kaynak sayfaları:\n${item.citations.citations.map((citation) => `Sayfa ${citation.page}: ${citation.quote}`).join('\n')}` : '').filter(Boolean).join('\n')}`
+        : ''
+      const officeNotice = officeExports.length ? `\nOffice çıktısı indirildi: ${officeExports.map((officeFile) => officeFile.fileName).join(', ')}` : ''
+      const audioNotice = data.audioOverview?.data ? '\nAudio overview indirildi.' : ''
+      const warningText = `${data.warnings?.length ? ` ${data.warnings.join(' ')}` : ''}${analysisNotice}${officeNotice}${audioNotice}`
+      const ocrText = data.ocrPages?.length
+        ? data.ocrPages.map((page) => `Sayfa ${page.page}: ${page.text || '(metin bulunamadı)'}`).join('\n')
+        : ''
+      const responseText = ocrText
+        ? `Yerel OCR tamamlandı:\n\n${ocrText.slice(0, 6000)}`
+        : appliedCount
+        ? `Düzenlemeyi PDF'e uyguladım. ${appliedCount} değişiklik preview'a yansıtıldı.${warningText}`
+        : `${data.assistantMessage}${warningText}`
+      const change = {
+        id: Date.now(),
+        title: appliedCount ? 'PDF düzenlemesi uygulandı' : 'AI düzenleme planı hazır',
+        description: responseText,
+        badge: actionLabel,
+        detail: `${appliedCount} değişiklik uygulandı. ${data.summary}`,
+      }
+      setChanges((current) => [...current, change])
+      setMessages((current) => [
+        ...current,
+        { id: Date.now() + 1, role: 'assistant', text: responseText },
+      ])
+      setAiStatus('live')
+    } catch (error) {
+      setAiStatus('error')
+      setMessages((current) => [
+        ...current,
+        { id: Date.now() + 1, role: 'assistant', text: error.message || 'AI bağlantısı kurulamadı.' },
+      ])
+    } finally {
+      setIsThinking(false)
+    }
+  }
+
+  const resetChanges = () => {
+    if (fileUrl && originalFile && file !== originalFile) URL.revokeObjectURL(fileUrl)
+    if (originalFile && file !== originalFile) {
+      setFile(originalFile)
+      setFileUrl(URL.createObjectURL(originalFile))
+      setCurrentPage(1)
+      const infoFormData = new FormData()
+      infoFormData.append('file', originalFile)
+      fetch('/api/pdf/info', { method: 'POST', body: infoFormData })
+        .then((response) => response.ok ? response.json() : null)
+        .then((info) => { if (info?.pageCount) setPageCount(info.pageCount); if (info?.title) setPdfTitle(info.title) })
+        .catch(() => {})
+    }
+    setChanges([])
+    setMessages((current) => [
+      ...current,
+      { id: Date.now(), role: 'assistant', text: 'Son düzenlemeleri geri aldım. Belge ilk haline döndü.' },
+    ])
+  }
+
+  const downloadCurrentPdf = () => {
+    if (!fileUrl || !file) return
+    const link = document.createElement('a')
+    link.href = fileUrl
+    link.download = `${file.name.replace(/\.pdf$/i, '')}-edited.pdf`
+    document.body.appendChild(link)
+    link.click()
+    link.remove()
+  }
+
+  const previewScale = useMemo(() => ({ transform: `scale(${zoom / 100})` }), [zoom])
+
+  return (
+    <div className="app-shell">
+      <header className="topbar">
+        <div className="brand-lockup">
+          <div className="brand-mark"><Sparkles size={17} strokeWidth={2.5} /></div>
+          <span className="brand-name">pdf<span>maniac</span></span>
+          <span className="beta-pill">BETA</span>
+        </div>
+
+        <div className="document-name">
+          <FileText size={15} />
+          <span>{documentTitle}</span>
+          <span className="saved-state"><Check size={13} /> Saved</span>
+        </div>
+
+        <div className="top-actions">
+          <button className="icon-button" title="Geçmişi göster" onClick={() => setShowHistory((value) => !value)}>
+            <History size={17} />
+          </button>
+          <button className="icon-button" title="Yetenekleri göster" onClick={() => setShowCapabilities((value) => !value)}>
+            <ListChecks size={17} />
+          </button>
+          <button className="icon-button" title="İki PDF’i karşılaştır" onClick={() => compareInputRef.current?.click()}>
+            {isComparing ? <LoaderCircle className="spin" size={17} /> : <GitCompareArrows size={17} />}
+          </button>
+          <button className="icon-button" title="PDF’leri birleştir" onClick={() => mergeInputRef.current?.click()}>
+            {isMerging ? <LoaderCircle className="spin" size={17} /> : <FilePlus2 size={17} />}
+          </button>
+          <button className="icon-button" title="More options"><MoreHorizontal size={18} /></button>
+          <button className="icon-button" title="İmza taleplerini takip et" onClick={() => { if (!session) { setAuthMode('login'); setShowAuth(true) } else setShowSignatureRequests(true) }}><Check size={17} /></button>
+          <button className="icon-button" title="İmza veya inceleme talebi oluştur" onClick={openSignatureRequest}><PenLine size={17} /></button>
+          {supabaseConfigured && (session ? <>
+            <button className="icon-button cloud-menu-button" title="Cloud dosyalarını aç" onClick={openCloudFiles}><Cloud size={17} /></button>
+            <button className="icon-button cloud-menu-button" title="PDF’i cloud’a kaydet" onClick={saveCurrentToCloud}>
+              {isCloudSaving ? <LoaderCircle className="spin" size={17} /> : <CloudUpload size={17} />}
+            </button>
+            <button className="icon-button cloud-menu-button" title="Cloud hesabından çıkış" onClick={signOut}><LogOut size={17} /></button>
+          </> : <button className="cloud-login-button" onClick={() => { setAuthMode('login'); setShowAuth(true) }}><LogIn size={14} /> Giriş</button>)}
+          <button className="export-button" onClick={downloadCurrentPdf}>
+            <Download size={15} /> Export
+          </button>
+          <div className="avatar">{session?.user?.email?.[0]?.toUpperCase() || 'C'}</div>
+          <input ref={compareInputRef} type="file" accept="application/pdf" hidden onChange={handleCompareFile} />
+          <input ref={mergeInputRef} type="file" accept="application/pdf" multiple hidden onChange={handleMergeFiles} />
+        </div>
+      </header>
+
+      <main className="workspace">
+        <section className="viewer-panel">
+          <div className="viewer-toolbar">
+            <div className="tool-group">
+              <button className={`tool-button ${activeTool === 'select' ? 'active' : ''}`} onClick={() => setActiveTool('select')} title="Seçim aracı">
+                <PanelRight size={16} />
+              </button>
+              <button className={`tool-button ${activeTool === 'highlight' ? 'active' : ''}`} onClick={() => setActiveTool('highlight')} title="Highlight aracı">
+                <Highlighter size={16} />
+              </button>
+              <span className="toolbar-divider" />
+              <button className="tool-button" onClick={() => setZoom((value) => Math.max(70, value - 10))} title="Uzaklaştır"><ZoomOut size={16} /></button>
+              <span className="zoom-label">{zoom}%</span>
+              <button className="tool-button" onClick={() => setZoom((value) => Math.min(140, value + 10))} title="Yakınlaştır"><ZoomIn size={16} /></button>
+            </div>
+            <div className="page-indicator"><span>{currentPage}</span> / {pageCount || '—'}</div>
+            <button className="tool-button" title="Geri al" onClick={resetChanges}><RotateCcw size={16} /></button>
+          </div>
+
+          <div
+            className={`viewer-stage ${isDragging ? 'dragging' : ''}`}
+            onDragOver={(event) => { event.preventDefault(); setIsDragging(true) }}
+            onDragLeave={() => setIsDragging(false)}
+            onDrop={(event) => { event.preventDefault(); setIsDragging(false); setPdf(event.dataTransfer.files?.[0]) }}
+          >
+            {fileUrl ? (
+              <div className="uploaded-pdf" style={previewScale}>
+                <iframe title="PDF preview" src={`${fileUrl}#page=${currentPage}`} />
+              </div>
+            ) : (
+              <div className="empty-viewer">
+                <div className="empty-viewer-copy">
+                  <div className="upload-icon"><Upload size={22} /></div>
+                  <h2>PDF’ini buraya bırak</h2>
+                  <p>veya cihazından bir dosya seçerek başla</p>
+                  <button className="choose-file-button" onClick={() => fileInputRef.current?.click()}>
+                    <FilePlus2 size={16} /> PDF seç
+                  </button>
+                  <span className="drop-hint">PDF dosyaları · Maks. 50 MB</span>
+                </div>
+                <DemoDocument change={activeChange} style={previewScale} />
+              </div>
+            )}
+            <input ref={fileInputRef} type="file" accept="application/pdf" hidden onChange={handleFileChange} />
+          </div>
+
+          <div className="viewer-footer">
+            <button className="page-nav" title="Önceki sayfa" onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} disabled={currentPage <= 1}>‹</button>
+            <div className="page-dots">{visiblePageNumbers.map((page) => <button className={`page-dot ${page === currentPage ? 'current' : ''}`} onClick={() => setCurrentPage(page)} key={page} aria-label={`Sayfa ${page}`} />)}</div>
+            <button className="page-nav" title="Sonraki sayfa" onClick={() => setCurrentPage((page) => Math.min(pageCount || 1, page + 1))} disabled={currentPage >= (pageCount || 1)}>›</button>
+            <span className="footer-separator" />
+            <span className="fit-label">Fit to width</span>
+          </div>
+        </section>
+
+        <section className="chat-panel">
+          <div className="chat-header">
+            <div className="chat-title-wrap">
+              <div className="ai-avatar"><Sparkles size={16} /></div>
+              <div><h1>AI assistant</h1><p><span className={`online-dot ${aiStatus === 'error' ? 'error' : ''}`} /> {aiStatus === 'live' ? 'Live AI connected' : aiStatus === 'error' ? 'Connection issue' : 'Ready to edit'}</p></div>
+            </div>
+            <button className="icon-button light" title="Sohbeti temizle" onClick={() => setMessages(initialMessages)}><Trash2 size={16} /></button>
+          </div>
+
+          <div className="chat-body">
+            {messages.map((message) => (
+              <div className={`message-row ${message.role}`} key={message.id}>
+                {message.role === 'assistant' && <div className="mini-ai-avatar"><Sparkles size={12} /></div>}
+                <div className="message-bubble">{message.text}</div>
+              </div>
+            ))}
+            {isThinking && (
+              <div className="message-row assistant">
+                <div className="mini-ai-avatar"><Sparkles size={12} /></div>
+                <div className="message-bubble thinking"><span /><span /><span /></div>
+              </div>
+            )}
+            <div ref={chatEndRef} />
+          </div>
+
+          <div className="suggestions">
+            <span className="suggestions-label">Try asking</span>
+            {starterPrompts.map(({ icon: Icon, label, prompt }) => (
+              <button key={label} className="suggestion-chip" onClick={() => submitPrompt(prompt)}><Icon size={14} /> {label}</button>
+            ))}
+          </div>
+
+          <div className="composer-wrap">
+            <div className="composer">
+              {imageFile && <div className="image-attachment"><ImagePlus size={13} /><span>{imageFile.name}</span><button type="button" onClick={() => setImageFile(null)} aria-label="Görseli kaldır"><X size={13} /></button></div>}
+              <textarea
+                value={input}
+                onChange={(event) => setInput(event.target.value)}
+                onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submitPrompt() } }}
+                placeholder="Ask AI to edit your PDF..."
+                rows={2}
+              />
+              <button className={`send-button ${input.trim() ? 'ready' : ''}`} onClick={() => submitPrompt()} disabled={!input.trim() || isThinking} title="Gönder">
+                {isThinking ? <LoaderCircle className="spin" size={17} /> : <ArrowUp size={18} />}
+              </button>
+            </div>
+            <div className="composer-meta">
+              <button className="attach-image-button" type="button" onClick={() => imageInputRef.current?.click()}><ImagePlus size={12} /> {imageFile ? 'Görsel hazır' : 'Görsel ekle'}</button>
+              <span><MessageSquareText size={12} /> Enter to send</span><span>AI can make mistakes</span>
+            </div>
+            <input ref={imageInputRef} type="file" accept="image/png,image/jpeg" hidden onChange={handleImageChange} />
+          </div>
+        </section>
+      </main>
+
+      {showHistory && <HistoryDrawer changes={changes} onClose={() => setShowHistory(false)} />}
+      {showCapabilities && <CapabilitiesDrawer summary={capabilitySummary} onClose={() => setShowCapabilities(false)} />}
+      {showComparison && <ComparisonDrawer comparison={comparison} onClose={() => setShowComparison(false)} />}
+      {showCloudFiles && <CloudFilesDrawer files={cloudFiles} onClose={() => setShowCloudFiles(false)} onOpen={downloadCloudFile} onDelete={deleteCloudFile} onShare={shareCloudFile} />}
+      {showSignatureRequest && <SignatureRequestModal busy={signatureRequestBusy} error={signatureRequestError} result={signatureRequestResult} documentName={file?.name} senderName={session?.user?.user_metadata?.full_name || session?.user?.email} senderEmail={session?.user?.email} pageCount={pageCount} currentPage={currentPage} onClose={() => setShowSignatureRequest(false)} onSubmit={createSignatureRequest} onOpenRequests={() => { setShowSignatureRequest(false); setShowSignatureRequests(true) }} />}
+      {showSignatureRequests && <SignatureRequestsDrawer session={session} authHeaders={authHeaders} onClose={() => setShowSignatureRequests(false)} />}
+      {showAuth && <AuthModal mode={authMode} busy={authBusy} error={authError} onModeChange={(mode) => { setAuthMode(mode); setAuthError('') }} onClose={() => setShowAuth(false)} onSubmit={handleAuthSubmit} />}
+      {toast && <ToastNotice notification={toast} onClose={() => setToast(null)} />}
+    </div>
+  )
+}
+
+function DemoDocument({ change, style }) {
+  const highlighted = change?.badge === 'Highlight'
+  return (
+    <div className="demo-document" style={style}>
+      <div className="demo-page-label">LIVE PREVIEW</div>
+      <div className="doc-topline"><span>ACME / PRODUCT BRIEF</span><span>2024 — 04</span></div>
+      <div className="doc-accent" />
+      <h3>Designing products<br /><em>people remember.</em></h3>
+      <p className="doc-lede">A practical guide to building clear, useful and memorable digital experiences.</p>
+      <div className="doc-rule" />
+      <div className="doc-grid">
+        <div><span className="doc-number">01</span><strong>Start with the user</strong><p className={highlighted ? 'highlighted' : ''}>Great products begin with a clear understanding of the people they serve.</p></div>
+        <div><span className="doc-number">02</span><strong>Make it obvious</strong><p className={highlighted ? 'highlighted' : ''}>Every interaction should feel simple, intentional and easy to understand.</p></div>
+      </div>
+      {change?.badge === 'Özet' && <div className="summary-card"><Sparkles size={13} /><span><b>AI summary</b> Product clarity and user needs are the central themes of this document.</span></div>}
+      <div className="doc-footer"><span>ACME STUDIO</span><span>01</span></div>
+    </div>
+  )
+}
+
+function HistoryDrawer({ changes, onClose }) {
+  return (
+    <aside className="history-drawer">
+      <div className="history-heading"><div><span>DOCUMENT</span><h2>Change history</h2></div><button className="icon-button light" onClick={onClose}><X size={17} /></button></div>
+      {changes.length === 0 ? <div className="history-empty"><History size={20} /><p>Henüz bir değişiklik yok.</p></div> : <div className="history-list">{[...changes].reverse().map((change, index) => <div className="history-item" key={change.id}><div className="history-dot">{index === 0 ? <Check size={12} /> : index + 1}</div><div><strong>{change.title}</strong><p>{change.detail}</p></div></div>)}</div>}
+    </aside>
+  )
+}
+
+function CapabilitiesDrawer({ summary, onClose }) {
+  const categories = summary?.categories || []
+  const capabilities = summary?.capabilities || []
+  const counts = summary?.counts || {}
+
+  return (
+    <aside className="history-drawer capability-drawer">
+      <div className="history-heading">
+        <div><span>PDF MANIAC</span><h2>Yetenekler</h2></div>
+        <button className="icon-button light" onClick={onClose}><X size={17} /></button>
+      </div>
+      <div className="capability-summary">
+        <div><strong>{counts.implemented || 0}</strong><span>hazır</span></div>
+        <div><strong>{counts.planned || 0}</strong><span>planlı</span></div>
+        <div><strong>{counts.external || 0}</strong><span>servis</span></div>
+      </div>
+      <div className="capability-list">
+        {categories.map((category) => {
+          const items = capabilities.filter((capability) => capability.category === category.id)
+          return (
+            <div className="capability-group" key={category.id}>
+              <div className="capability-group-title">{category.label}<span>{items.length}</span></div>
+              {items.map((capability) => (
+                <div className="capability-item" key={capability.id}>
+                  <span>{capability.label}</span>
+                  <small className={`capability-status ${capability.status}`}>{capability.status === 'implemented' ? 'Hazır' : capability.status === 'planned' ? 'Planlı' : 'Servis'}</small>
+                </div>
+              ))}
+            </div>
+          )
+        })}
+      </div>
+    </aside>
+  )
+}
+
+function ComparisonDrawer({ comparison, onClose }) {
+  if (!comparison) return null
+  return (
+    <aside className="history-drawer comparison-drawer">
+      <div className="history-heading">
+        <div><span>PDF ANALİZİ</span><h2>Karşılaştırma</h2></div>
+        <button className="icon-button light" onClick={onClose}><X size={17} /></button>
+      </div>
+      <div className="comparison-overview">
+        <strong>{comparison.same ? 'PDF’ler aynı görünüyor' : `${comparison.differences?.length || 0} sayfada fark bulundu`}</strong>
+        <p>İkinci dosya: {comparison.fileName}</p>
+        <div className="comparison-stats"><span>Sol: {comparison.left?.pages || 0} sayfa</span><span>Sağ: {comparison.right?.pages || 0} sayfa</span></div>
+      </div>
+      {comparison.differences?.length ? (
+        <div className="comparison-diffs">
+          {comparison.differences.map((difference) => (
+            <div className="compare-diff" key={difference.page}>
+              <strong>Sayfa {difference.page}</strong>
+              <span>{difference.added?.length || 0} eklenen · {difference.removed?.length || 0} çıkarılan kelime</span>
+              {difference.added?.length > 0 && <p className="compare-words added">+ {difference.added.slice(0, 18).join(' ')}</p>}
+              {difference.removed?.length > 0 && <p className="compare-words removed">− {difference.removed.slice(0, 18).join(' ')}</p>}
+            </div>
+          ))}
+        </div>
+      ) : <div className="history-empty"><Check size={20} /><p>Metin farkı bulunamadı.</p></div>}
+    </aside>
+  )
+}
+
+function CloudFilesDrawer({ files, onClose, onOpen, onDelete, onShare }) {
+  const [error, setError] = useState('')
+  return (
+    <aside className="history-drawer cloud-files-drawer">
+      <div className="history-heading">
+        <div><span>PRIVATE STORAGE</span><h2>Cloud dosyaları</h2></div>
+        <button className="icon-button light" onClick={onClose}><X size={17} /></button>
+      </div>
+      {error && <div className="auth-error inline-error">{error}</div>}
+      {files.length === 0 ? <div className="history-empty"><Cloud size={20} /><p>Henüz cloud dosyan yok.</p></div> : <div className="cloud-file-list">
+        {files.map((file) => (
+          <div className="cloud-file-item" key={file.path}>
+            <FileText size={16} />
+            <div className="cloud-file-copy"><strong>{file.name}</strong><span>{file.size ? `${Math.ceil(file.size / 1024)} KB` : 'PDF'}</span></div>
+            <button className="icon-button light" title="PDF’i aç" onClick={() => onOpen(file)}><Download size={15} /></button>
+            <button className="icon-button light" title="Süreli paylaşım bağlantısı oluştur" onClick={async () => { try { await onShare(file) } catch (shareError) { setError(shareError.message || 'Bağlantı oluşturulamadı.') } }}><Link2 size={15} /></button>
+            <button className="icon-button light" title="Cloud’dan sil" onClick={async () => { try { await onDelete(file) } catch (deleteError) { setError(deleteError.message || 'Dosya silinemedi.') } }}><Trash2 size={15} /></button>
+          </div>
+        ))}
+      </div>}
+    </aside>
+  )
+}
+
+function SignatureRequestModal({ busy, error, result, documentName, senderName, senderEmail, pageCount, currentPage, onClose, onSubmit, onOpenRequests }) {
+  const [recipientEmail, setRecipientEmail] = useState('')
+  const [recipientName, setRecipientName] = useState('')
+  const [message, setMessage] = useState('')
+  const [workflowType, setWorkflowType] = useState('signature')
+  const [expiresIn, setExpiresIn] = useState('604800')
+  const [placement, setPlacement] = useState({ page: Math.max(1, currentPage || 1), left: 0.16, top: 0.72, width: 0.56, height: 0.11 })
+  const [copied, setCopied] = useState(false)
+  const [formError, setFormError] = useState('')
+
+  const submit = (event) => {
+    event.preventDefault()
+    if (!recipientName.trim()) {
+      setFormError('İmzalayacak kişinin adı gerekli.')
+      return
+    }
+    setFormError('')
+    onSubmit({ recipientEmail: recipientEmail.trim(), recipientName: recipientName.trim(), message: message.trim(), workflowType, expiresIn: Number(expiresIn), signaturePlacement: placement })
+  }
+
+  const choosePlacement = (event) => {
+    const paper = event.currentTarget.getBoundingClientRect()
+    const width = placement.width
+    const height = placement.height
+    const pointerX = Number.isFinite(event.clientX) ? event.clientX : paper.left + paper.width / 2
+    const pointerY = Number.isFinite(event.clientY) ? event.clientY : paper.top + paper.height / 2
+    const left = Math.min(1 - width - 0.03, Math.max(0.03, (pointerX - paper.left) / paper.width - width / 2))
+    const top = Math.min(1 - height - 0.03, Math.max(0.03, (pointerY - paper.top) / paper.height - height / 2))
+    setPlacement((current) => ({ ...current, left, top }))
+  }
+
+  const copyLink = async () => {
+    if (!result?.reviewUrl) return
+    await navigator.clipboard?.writeText(result.reviewUrl)
+    setCopied(true)
+    window.setTimeout(() => setCopied(false), 1800)
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
+      <div className="auth-modal signature-modal">
+        <div className="auth-modal-heading"><div><span>PDF WORKFLOW</span><h2>{result ? 'Talep gönderildi' : 'İmza veya inceleme isteği'}</h2></div><button className="icon-button light" onClick={onClose} disabled={busy}><X size={17} /></button></div>
+        {result ? (
+          <div className="signature-success">
+            <div className="signature-success-icon"><Check size={19} /></div>
+            <strong>{result.workflowType === 'review' ? 'İnceleme linki hazır.' : 'İmza linki e-posta ile gönderildi.'}</strong>
+            <p>{documentName} için güvenli bağlantı oluşturuldu. Alıcı linki açıp PDF’i görüntüleyebilir.</p>
+            <div className="signature-link-box"><span>{result.reviewUrl}</span><button type="button" className="auth-submit" onClick={copyLink}>{copied ? 'Kopyalandı' : 'Linki kopyala'}</button></div>
+            <div className="signature-modal-actions"><button type="button" className="auth-switch" onClick={onOpenRequests}>Talepleri takip et</button><button type="button" className="auth-submit" onClick={onClose}>Kapat</button></div>
+          </div>
+        ) : (
+          <>
+            <p className="auth-description"><strong>{documentName}</strong> dosyasını güvenli bir linkle başka bir kişiye gönder.</p>
+            <form onSubmit={submit}>
+              <div className="signature-sender-card"><span>Gönderen hesap</span><strong>{senderName}</strong><small>{senderEmail}</small></div>
+              <div className="signature-placement-field"><div className="signature-placement-heading"><label>İmza alanı</label><span>PDF üzerinde tıklayarak konumu seç</span></div><div className="signature-paper" onClick={choosePlacement} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') choosePlacement(event) }}><div className="signature-paper-line one" /><div className="signature-paper-line two" /><div className="signature-paper-line three" /><div className="signature-placement-marker" style={{ left: `${placement.left * 100}%`, top: `${placement.top * 100}%`, width: `${placement.width * 100}%`, height: `${placement.height * 100}%` }}><PenLine size={12} /> İmza alanı</div></div><div className="signature-placement-controls"><label>Sayfa<select value={placement.page} onChange={(event) => setPlacement((current) => ({ ...current, page: Number(event.target.value) }))}>{Array.from({ length: Math.max(1, pageCount || 1) }, (_item, index) => <option value={index + 1} key={index + 1}>{index + 1}</option>)}</select></label><span>Seçilen alan imzalı PDF’e aynı konuma işlenecek.</span></div></div>
+              <label>Akış türü<select value={workflowType} onChange={(event) => setWorkflowType(event.target.value)}><option value="signature">İmza iste</option><option value="review">İnceleme iste</option></select></label>
+              <label>Alıcı e-posta<input type="email" value={recipientEmail} onChange={(event) => setRecipientEmail(event.target.value)} required autoComplete="email" placeholder="alici@example.com" /></label>
+              <label>Alıcı adı (opsiyonel)<input value={recipientName} onChange={(event) => setRecipientName(event.target.value)} autoComplete="name" placeholder="Ali Yılmaz" /></label>
+              <label>Mesaj (opsiyonel)<textarea className="signature-message-input" value={message} onChange={(event) => setMessage(event.target.value)} rows={3} placeholder="Kısa bir not ekle..." /></label>
+              <label>Link geçerliliği<select value={expiresIn} onChange={(event) => setExpiresIn(event.target.value)}><option value="86400">24 saat</option><option value="604800">7 gün</option><option value="2592000">30 gün</option></select></label>
+              {(error || formError) && <div className="auth-error">{error || formError}</div>}
+              <button className="auth-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <PenLine size={16} />} {busy ? 'Gönderiliyor...' : 'Güvenli link gönder'}</button>
+            </form>
+          </>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SignatureRequestsDrawer({ session, authHeaders, onClose }) {
+  const [requests, setRequests] = useState([])
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+
+  useEffect(() => {
+    if (!session) return undefined
+    let active = true
+    fetch('/api/signatures', { headers: authHeaders() })
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(data.error || 'İmza talepleri okunamadı.')
+        if (active) setRequests(data.requests || [])
+      })
+      .catch((requestError) => { if (active) setError(requestError.message) })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [session])
+
+  return (
+    <aside className="history-drawer signature-requests-drawer">
+      <div className="history-heading"><div><span>PDF WORKFLOW</span><h2>İmza talepleri</h2></div><button className="icon-button light" onClick={onClose}><X size={17} /></button></div>
+      {error && <div className="auth-error inline-error">{error}</div>}
+      {loading ? <div className="history-empty"><LoaderCircle className="spin" size={20} /><p>Talepler yükleniyor...</p></div> : requests.length === 0 ? <div className="history-empty"><PenLine size={20} /><p>Henüz bir imza talebi yok.</p></div> : <div className="signature-request-list">
+        {requests.map((request) => <div className="signature-request-item" key={request.id}><div className="signature-request-main"><strong>{request.document_name}</strong><span>{request.recipient_name || request.recipient_email}</span><small>{request.workflow_type === 'review' ? 'İnceleme' : 'İmza'} · {new Date(request.created_at).toLocaleString()}</small>{request.signedDocumentUrl && <a className="signed-document-link" href={request.signedDocumentUrl} target="_blank" rel="noreferrer">İmzalı PDF’i aç</a>}</div><em className={`request-status ${request.status}`}>{request.status}</em></div>)}
+      </div>}
+    </aside>
+  )
+}
+
+function AuthModal({ mode, busy, error, onModeChange, onClose, onSubmit }) {
+  const [fullName, setFullName] = useState('')
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+
+  const submit = (event) => {
+    event.preventDefault()
+    onSubmit({ email: email.trim(), password, fullName: fullName.trim() })
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <div className="auth-modal">
+        <div className="auth-modal-heading"><div><span>PDF MANIAC CLOUD</span><h2>{mode === 'login' ? 'Hesabına giriş yap' : 'Hesap oluştur'}</h2></div><button className="icon-button light" onClick={onClose}><X size={17} /></button></div>
+        <p className="auth-description">PDF’lerini private storage’da saklamak ve cihazlar arasında açmak için kullan.</p>
+        <form onSubmit={submit}>
+          {mode === 'signup' && <label>Ad soyad<input value={fullName} onChange={(event) => setFullName(event.target.value)} required autoComplete="name" placeholder="Ad Soyad" /></label>}
+          <label>E-posta<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label>
+          <label>Şifre<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={6} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} /></label>
+          {error && <div className="auth-error">{error}</div>}
+          <button className="auth-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <LogIn size={16} />} {mode === 'login' ? 'Giriş yap' : 'Kayıt ol'}</button>
+        </form>
+        <button className="auth-switch" onClick={() => onModeChange(mode === 'login' ? 'signup' : 'login')}>{mode === 'login' ? 'Hesabın yok mu? Kayıt ol' : 'Zaten hesabın var mı? Giriş yap'}</button>
+      </div>
+    </div>
+  )
+}
+
+function ToastNotice({ notification, onClose }) {
+  return (
+    <div className={`toast-notice ${notification.tone || 'success'}`} role="status">
+      <div className="toast-icon"><Check size={15} /></div>
+      <span>{notification.text}</span>
+      <button className="toast-close" onClick={onClose} aria-label="Bildirimi kapat"><X size={14} /></button>
+    </div>
+  )
+}
+
+function ReviewPage({ token }) {
+  const [request, setRequest] = useState(null)
+  const [signatureText, setSignatureText] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [loadError, setLoadError] = useState('')
+  const [done, setDone] = useState(false)
+  const [notifiedEmails, setNotifiedEmails] = useState([])
+
+  useEffect(() => {
+    let active = true
+    fetch(`/api/signatures/${encodeURIComponent(token)}`)
+      .then(async (response) => {
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(data.error || 'İmza bağlantısı açılamadı.')
+        if (active) {
+          setRequest(data.request)
+          setDone(data.request?.status === 'signed')
+        }
+      })
+      .catch((requestError) => { if (active) setLoadError(requestError.message) })
+      .finally(() => { if (active) setLoading(false) })
+    return () => { active = false }
+  }, [token])
+
+  const submitSignature = async (event) => {
+    event.preventDefault()
+    if (!signatureText.trim() || busy) return
+    setBusy(true)
+    setError('')
+    try {
+      const response = await fetch(`/api/signatures/${encodeURIComponent(token)}/sign`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ signatureText: signatureText.trim() }) })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data.error || 'İmza kaydedilemedi.')
+      setDone(true)
+      setNotifiedEmails(data.notifiedEmails || [])
+      setRequest((current) => current ? { ...current, status: 'signed', signedAt: data.signedAt } : current)
+    } catch (submitError) {
+      setError(submitError.message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="review-shell">
+      <header className="review-header"><div className="brand-lockup"><div className="brand-mark"><Sparkles size={17} strokeWidth={2.5} /></div><span className="brand-name">pdf<span>maniac</span></span></div><span className="review-secure"><Check size={13} /> Güvenli PDF workflow</span></header>
+      {loading ? <div className="review-state"><LoaderCircle className="spin" size={25} /><p>PDF hazırlanıyor...</p></div> : loadError ? <div className="review-state review-error"><X size={25} /><h1>Bağlantı açılamadı</h1><p>{loadError}</p></div> : request && <main className="review-layout"><section className="review-viewer"><div className="review-viewer-heading"><FileText size={16} /><strong>{request.documentName}</strong></div><iframe title="İmzalanacak PDF" src={`${request.signedUrl}#toolbar=0&navpanes=0`} /></section><section className="review-card"><div className="review-card-icon"><PenLine size={19} /></div><span className="review-eyebrow">{request.workflowType === 'review' ? 'PDF inceleme isteği' : 'PDF imza isteği'}</span><h1>{request.workflowType === 'review' ? 'Belgeyi incele ve onayla' : 'Belgeyi imzala'}</h1>{request.recipientName && <p className="review-greeting">Merhaba {request.recipientName},</p>}{request.message && <p className="review-message">{request.message}</p>}<p className="review-expiry">Bu bağlantı {new Date(request.expiresAt).toLocaleString()} tarihine kadar geçerli.</p>{done ? <div className="review-complete"><Check size={20} /><strong>İşlem tamamlandı</strong><p>{notifiedEmails.length >= 2 ? 'İmzalı PDF, belge sahibine ve imzalayan kişiye e-posta ile gönderildi.' : notifiedEmails.length === 1 ? 'İmza kaydedildi ve imzalı PDF e-posta ile gönderildi.' : 'Yanıtın kaydedildi. E-posta gönderimi daha sonra tekrar denenecek.'}</p></div> : <form className="review-form" onSubmit={submitSignature}><label>{request.workflowType === 'review' ? 'Onay adı' : 'İmza metni'}<input value={signatureText} onChange={(event) => setSignatureText(event.target.value)} required maxLength={500} placeholder="Adını ve soyadını yaz" /></label>{error && <div className="auth-error">{error}</div>}<button className="auth-submit" type="submit" disabled={busy || !signatureText.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {busy ? 'Kaydediliyor...' : request.workflowType === 'review' ? 'İncelemeyi tamamla' : 'PDF’i imzala'}</button></form>}<p className="review-disclaimer">Bu işlem, belge sahibinin gönderdiği PDF üzerinde elektronik onay kaydı oluşturur.</p></section></main>}
+    </div>
+  )
+}
+
+const reviewToken = window.location.pathname.startsWith('/review/') ? decodeURIComponent(window.location.pathname.split('/').filter(Boolean).pop() || '') : ''
+createRoot(document.getElementById('root')).render(reviewToken ? <ReviewPage token={reviewToken} /> : <App />)
