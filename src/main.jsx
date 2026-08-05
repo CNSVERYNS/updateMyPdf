@@ -97,6 +97,9 @@ function App() {
   const [authMode, setAuthMode] = useState('login')
   const [authBusy, setAuthBusy] = useState(false)
   const [authError, setAuthError] = useState('')
+  const [showAccount, setShowAccount] = useState(false)
+  const [profileBusy, setProfileBusy] = useState(false)
+  const [profileError, setProfileError] = useState('')
   const [toast, setToast] = useState(null)
   const [cloudFiles, setCloudFiles] = useState([])
   const [showCloudFiles, setShowCloudFiles] = useState(false)
@@ -169,7 +172,7 @@ function App() {
     setAuthError('')
     try {
       const result = authMode === 'signup'
-        ? await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName?.trim() || email } } })
+        ? await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName?.trim() || email }, emailRedirectTo: window.location.origin } })
         : await supabase.auth.signInWithPassword({ email, password })
       if (result.error) throw result.error
       if (authMode === 'signup' && !result.data.session) {
@@ -185,6 +188,25 @@ function App() {
       setAuthError(error.message || 'Giriş işlemi başarısız oldu.')
     } finally {
       setAuthBusy(false)
+    }
+  }
+
+  const handleProfileSave = async ({ fullName, password }) => {
+    if (!supabase) return
+    setProfileBusy(true)
+    setProfileError('')
+    try {
+      const updates = { data: { full_name: fullName.trim() } }
+      if (password.trim()) updates.password = password.trim()
+      const result = await supabase.auth.updateUser(updates)
+      if (result.error) throw result.error
+      setSession(result.data.user ? { ...session, user: result.data.user } : session)
+      setShowAccount(false)
+      setToast({ tone: 'success', text: 'Hesap bilgilerin güncellendi.' })
+    } catch (error) {
+      setProfileError(error.message || 'Hesap bilgileri güncellenemedi.')
+    } finally {
+      setProfileBusy(false)
     }
   }
 
@@ -622,7 +644,7 @@ function App() {
           <button className="export-button" onClick={downloadCurrentPdf}>
             <Download size={15} /> Export
           </button>
-          <div className="avatar">{session?.user?.email?.[0]?.toUpperCase() || 'C'}</div>
+          <button className="avatar" title="Hesap ayarları" onClick={() => { setProfileError(''); setShowAccount(true) }}>{session?.user?.user_metadata?.full_name?.[0]?.toUpperCase() || session?.user?.email?.[0]?.toUpperCase() || 'C'}</button>
           <input ref={compareInputRef} type="file" accept="application/pdf" hidden onChange={handleCompareFile} />
           <input ref={mergeInputRef} type="file" accept="application/pdf" multiple hidden onChange={handleMergeFiles} />
         </div>
@@ -745,6 +767,7 @@ function App() {
       {showSignatureRequest && <SignatureRequestModal busy={signatureRequestBusy} error={signatureRequestError} result={signatureRequestResult} documentName={file?.name} senderName={session?.user?.user_metadata?.full_name || session?.user?.email} senderEmail={session?.user?.email} pageCount={pageCount} currentPage={currentPage} onClose={() => setShowSignatureRequest(false)} onSubmit={createSignatureRequest} onOpenRequests={() => { setShowSignatureRequest(false); setShowSignatureRequests(true) }} />}
       {showSignatureRequests && <SignatureRequestsDrawer session={session} authHeaders={authHeaders} onClose={() => setShowSignatureRequests(false)} />}
       {showAuth && <AuthModal mode={authMode} busy={authBusy} error={authError} onModeChange={(mode) => { setAuthMode(mode); setAuthError('') }} onClose={() => setShowAuth(false)} onSubmit={handleAuthSubmit} />}
+      {showAccount && session && <AccountModal session={session} busy={profileBusy} error={profileError} onClose={() => setShowAccount(false)} onSubmit={handleProfileSave} />}
       {toast && <ToastNotice notification={toast} onClose={() => setToast(null)} />}
     </div>
   )
@@ -966,6 +989,32 @@ function SignatureRequestsDrawer({ session, authHeaders, onClose }) {
         {requests.map((request) => <div className="signature-request-item" key={request.id}><div className="signature-request-main"><strong>{request.document_name}</strong><span>{request.recipient_name || request.recipient_email}</span><small>{request.workflow_type === 'review' ? 'İnceleme' : 'İmza'} · {new Date(request.created_at).toLocaleString()}</small>{request.signedDocumentUrl && <a className="signed-document-link" href={request.signedDocumentUrl} target="_blank" rel="noreferrer">İmzalı PDF’i aç</a>}</div><em className={`request-status ${request.status}`}>{request.status}</em></div>)}
       </div>}
     </aside>
+  )
+}
+
+function AccountModal({ session, busy, error, onClose, onSubmit }) {
+  const [fullName, setFullName] = useState(session.user.user_metadata?.full_name || '')
+  const [password, setPassword] = useState('')
+
+  const submit = (event) => {
+    event.preventDefault()
+    onSubmit({ fullName: fullName.trim(), password })
+  }
+
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
+      <div className="auth-modal account-modal">
+        <div className="auth-modal-heading"><div><span>PDF MANIAC CLOUD</span><h2>Hesap bilgileri</h2></div><button className="icon-button light" onClick={onClose} disabled={busy}><X size={17} /></button></div>
+        <p className="auth-description">Gönderdiğin imza taleplerinde bu ad ve kayıtlı e-posta otomatik gönderen bilgisi olarak kullanılır.</p>
+        <form onSubmit={submit}>
+          <label>Ad soyad<input value={fullName} onChange={(event) => setFullName(event.target.value)} required autoComplete="name" /></label>
+          <label>Kayıtlı e-posta<input value={session.user.email || ''} readOnly disabled /></label>
+          <label>Yeni şifre (opsiyonel)<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={6} autoComplete="new-password" placeholder="Değiştirmek istemiyorsan boş bırak" /></label>
+          {error && <div className="auth-error">{error}</div>}
+          <button className="auth-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} Kaydet</button>
+        </form>
+      </div>
+    </div>
   )
 }
 

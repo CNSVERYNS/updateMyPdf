@@ -1188,6 +1188,24 @@ app.post('/api/pdf/ocr', upload.single('file'), async (request, response) => {
   }
 })
 
+const distDirectory = path.resolve(process.cwd(), 'dist')
+const distIndex = path.join(distDirectory, 'index.html')
+if (existsSync(distIndex)) {
+  const sendClient = (_request, response) => {
+    const html = readFileSync(distIndex, 'utf8')
+      .replace('"__PDF_MANIAC_SUPABASE_URL__"', JSON.stringify(process.env.SUPABASE_URL || ''))
+      .replace('"__PDF_MANIAC_SUPABASE_ANON_KEY__"', JSON.stringify(process.env.SUPABASE_ANON_KEY || ''))
+    response.type('html').send(html)
+  }
+  app.get('/', sendClient)
+  app.get('/review/:token', sendClient)
+  app.use(express.static(distDirectory))
+  app.use((request, response, next) => {
+    if (request.path.startsWith('/api/')) return next()
+    return sendClient(request, response)
+  })
+}
+
 app.use((error, _request, response, _next) => {
   if (error?.code === 'LIMIT_FILE_SIZE') return response.status(413).json({ error: 'PDF dosyası 50 MB sınırını aşamaz.' })
   return response.status(500).json({ error: 'Beklenmeyen sunucu hatası.' })
