@@ -36,6 +36,9 @@ import {
 import { supabase, supabaseConfigured } from './supabase'
 import './styles.css'
 
+const apiBaseUrl = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+const apiFetch = (path, options) => fetch(`${apiBaseUrl}${path}`, options)
+
 const starterPrompts = [
   { icon: Highlighter, label: 'Önemli yerleri işaretle', prompt: 'Önemli cümleleri sarı renkle işaretle.' },
   { icon: FileText, label: 'Özet çıkar', prompt: 'Bu PDF için kısa bir özet hazırla.' },
@@ -129,7 +132,7 @@ function App() {
   }, [messages, isThinking])
 
   useEffect(() => {
-    fetch('/api/capabilities')
+    apiFetch('/api/capabilities')
       .then((response) => response.ok ? response.json() : null)
       .then((data) => setCapabilitySummary(data))
       .catch(() => setCapabilitySummary(null))
@@ -160,7 +163,7 @@ function App() {
 
   const loadCloudFiles = async () => {
     if (!session) return
-    const result = await fetch('/api/storage/files', { headers: authHeaders() })
+    const result = await apiFetch('/api/storage/files', { headers: authHeaders() })
     const data = await result.json().catch(() => ({}))
     if (!result.ok) throw new Error(data.error || 'Cloud dosyaları okunamadı.')
     setCloudFiles(data.files || [])
@@ -225,7 +228,7 @@ function App() {
     }
     const formData = new FormData()
     formData.append('file', file)
-    const result = await fetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: formData })
+    const result = await apiFetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: formData })
     const data = await result.json().catch(() => ({}))
     if (!result.ok) throw new Error(data.error || 'PDF cloud’a yüklenemedi.')
     setCurrentCloudPath(data.path || '')
@@ -242,7 +245,7 @@ function App() {
     try {
       const formData = new FormData()
       formData.append('file', file)
-      const result = await fetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: formData })
+      const result = await apiFetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: formData })
       const data = await result.json().catch(() => ({}))
       if (!result.ok) throw new Error(data.error || 'PDF cloud’a yüklenemedi.')
       setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: 'PDF private cloud storage’a kaydedildi.' }])
@@ -275,7 +278,7 @@ function App() {
     setSignatureRequestError('')
     try {
       const documentPath = (await uploadCurrentToCloud()).path
-      const result = await fetch('/api/signatures/request', {
+      const result = await apiFetch('/api/signatures/request', {
         method: 'POST',
         headers: { ...authHeaders(), 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -323,14 +326,14 @@ function App() {
   }
 
   const deleteCloudFile = async (cloudFile) => {
-    const result = await fetch('/api/storage/files', { method: 'DELETE', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ path: cloudFile.path }) })
+    const result = await apiFetch('/api/storage/files', { method: 'DELETE', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ path: cloudFile.path }) })
     const data = await result.json().catch(() => ({}))
     if (!result.ok) throw new Error(data.error || 'Cloud dosyası silinemedi.')
     setCloudFiles((current) => current.filter((fileItem) => fileItem.path !== cloudFile.path))
   }
 
   const shareCloudFile = async (cloudFile) => {
-    const result = await fetch('/api/storage/share', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ path: cloudFile.path, expiresIn: 86400 }) })
+    const result = await apiFetch('/api/storage/share', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ path: cloudFile.path, expiresIn: 86400 }) })
     const data = await result.json().catch(() => ({}))
     if (!result.ok) throw new Error(data.error || 'PaylaÅŸÄ±m baÄŸlantÄ±sÄ± oluÅŸturulamadÄ±.')
     await navigator.clipboard?.writeText(data.signedUrl)
@@ -357,7 +360,7 @@ function App() {
     setCurrentPage(1)
     const infoFormData = new FormData()
     infoFormData.append('file', selectedFile)
-    fetch('/api/pdf/info', { method: 'POST', body: infoFormData })
+    apiFetch('/api/pdf/info', { method: 'POST', body: infoFormData })
       .then((response) => response.ok ? response.json() : null)
       .then((data) => { if (data?.pageCount) setPageCount(data.pageCount); if (data?.title) setPdfTitle(data.title) })
       .catch(() => {})
@@ -395,7 +398,7 @@ function App() {
       const formData = new FormData()
       formData.append('files', file)
       formData.append('files', secondFile)
-      const result = await fetch('/api/pdf/compare', { method: 'POST', body: formData })
+      const result = await apiFetch('/api/pdf/compare', { method: 'POST', body: formData })
       const rawResponse = await result.text()
       const data = rawResponse ? JSON.parse(rawResponse) : {}
       if (!result.ok) throw new Error(data.error || 'PDF karşılaştırılamadı.')
@@ -421,7 +424,7 @@ function App() {
       const formData = new FormData()
       formData.append('files', file)
       selectedFiles.forEach((selectedFile) => formData.append('files', selectedFile))
-      const result = await fetch('/api/pdf/merge', { method: 'POST', body: formData })
+      const result = await apiFetch('/api/pdf/merge', { method: 'POST', body: formData })
       if (!result.ok) {
         const data = await result.json().catch(() => ({}))
         throw new Error(data.error || 'PDF’ler birleştirilemedi.')
@@ -501,7 +504,7 @@ function App() {
       formData.append('prompt', cleanPrompt)
       formData.append('file', file)
       if (imageFile) formData.append('image', imageFile)
-      const result = await fetch('/api/ai/command', { method: 'POST', body: formData })
+      const result = await apiFetch('/api/ai/command', { method: 'POST', body: formData })
       const rawResponse = await result.text()
       let data = {}
       try {
@@ -523,7 +526,7 @@ function App() {
         setPageCount(0)
         const infoFormData = new FormData()
         infoFormData.append('file', editedFile)
-        fetch('/api/pdf/info', { method: 'POST', body: infoFormData })
+        apiFetch('/api/pdf/info', { method: 'POST', body: infoFormData })
           .then((response) => response.ok ? response.json() : null)
           .then((info) => { if (info?.pageCount) { setPageCount(info.pageCount); setCurrentPage((current) => Math.min(current, info.pageCount)) }; if (info?.title) setPdfTitle(info.title) })
           .catch(() => {})
@@ -579,7 +582,7 @@ function App() {
       setCurrentPage(1)
       const infoFormData = new FormData()
       infoFormData.append('file', originalFile)
-      fetch('/api/pdf/info', { method: 'POST', body: infoFormData })
+      apiFetch('/api/pdf/info', { method: 'POST', body: infoFormData })
         .then((response) => response.ok ? response.json() : null)
         .then((info) => { if (info?.pageCount) setPageCount(info.pageCount); if (info?.title) setPdfTitle(info.title) })
         .catch(() => {})
@@ -970,7 +973,7 @@ function SignatureRequestsDrawer({ session, authHeaders, onClose }) {
   useEffect(() => {
     if (!session) return undefined
     let active = true
-    fetch('/api/signatures', { headers: authHeaders() })
+    apiFetch('/api/signatures', { headers: authHeaders() })
       .then(async (response) => {
         const data = await response.json().catch(() => ({}))
         if (!response.ok) throw new Error(data.error || 'İmza talepleri okunamadı.')
@@ -1068,7 +1071,7 @@ function ReviewPage({ token }) {
 
   useEffect(() => {
     let active = true
-    fetch(`/api/signatures/${encodeURIComponent(token)}`)
+    apiFetch(`/api/signatures/${encodeURIComponent(token)}`)
       .then(async (response) => {
         const data = await response.json().catch(() => ({}))
         if (!response.ok) throw new Error(data.error || 'İmza bağlantısı açılamadı.')
@@ -1088,7 +1091,7 @@ function ReviewPage({ token }) {
     setBusy(true)
     setError('')
     try {
-      const response = await fetch(`/api/signatures/${encodeURIComponent(token)}/sign`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ signatureText: signatureText.trim() }) })
+      const response = await apiFetch(`/api/signatures/${encodeURIComponent(token)}/sign`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ signatureText: signatureText.trim() }) })
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data.error || 'İmza kaydedilemedi.')
       setDone(true)
