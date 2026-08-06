@@ -914,39 +914,44 @@ function App() {
           <span className="beta-pill">BETA</span>
         </div>
 
-        <div className="document-name">
+        {session && <div className="document-name">
           <FileText size={15} />
           <span>{documentTitle}</span>
           <span className="saved-state"><Check size={13} /> Saved</span>
-        </div>
+        </div>}
 
         <div className="top-actions">
-          <button className="icon-button" title="Geçmişi göster" onClick={() => setShowHistory((value) => !value)}>
-            <History size={17} />
-          </button>
-          <button className="icon-button" title="Yetenekleri göster" onClick={() => setShowCapabilities((value) => !value)}>
-            <ListChecks size={17} />
-          </button>
-          <button className="icon-button" title="İki PDF’i karşılaştır" onClick={() => compareInputRef.current?.click()}>
-            {isComparing ? <LoaderCircle className="spin" size={17} /> : <GitCompareArrows size={17} />}
-          </button>
-          <button className="icon-button" title="PDF’leri birleştir" onClick={() => mergeInputRef.current?.click()}>
-            {isMerging ? <LoaderCircle className="spin" size={17} /> : <FilePlus2 size={17} />}
-          </button>
-          <button className="icon-button" title="Planları gör" onClick={() => setShowPricing(true)}><MoreHorizontal size={18} /></button>
-          <button className="icon-button" title="İmza taleplerini takip et" onClick={() => { if (!session) openAuthPrompt(); else setShowSignatureRequests(true) }}><Check size={17} /></button>
-          <button className="icon-button" title="İmza veya inceleme talebi oluştur" onClick={openSignatureRequest}><PenLine size={17} /></button>
-          {supabaseConfigured && (session ? <>
-            <button className="icon-button cloud-menu-button" title="Cloud dosyalarını aç" onClick={openCloudFiles}><Cloud size={17} /></button>
-            <button className="icon-button cloud-menu-button" title="PDF’i cloud’a kaydet" onClick={saveCurrentToCloud}>
-              {isCloudSaving ? <LoaderCircle className="spin" size={17} /> : <CloudUpload size={17} />}
+          {session ? <>
+            <button className="icon-button" title="Geçmişi göster" onClick={() => setShowHistory((value) => !value)}>
+              <History size={17} />
             </button>
-            <button className="icon-button cloud-menu-button" title="Cloud hesabından çıkış" onClick={signOut}><LogOut size={17} /></button>
-          </> : <><button className="cloud-login-button" onClick={() => { setAuthMode('login'); setAuthError(''); setShowAuth(true) }}><LogIn size={14} /> Giriş yap</button><button className="account-create-button" onClick={() => { setAuthMode('signup'); setAuthError(''); setShowAuth(true) }}>Hesap oluştur</button></>)}
-          <button className="export-button" onClick={downloadCurrentPdf}>
-            <Download size={15} /> Export
-          </button>
-          {session && <button className="avatar" title="Hesap ayarları" onClick={() => { setProfileError(''); setShowAccount(true) }}>{session.user.user_metadata?.full_name?.[0]?.toUpperCase() || session.user.email?.[0]?.toUpperCase() || 'C'}</button>}
+            <button className="icon-button" title="Yetenekleri göster" onClick={() => setShowCapabilities((value) => !value)}>
+              <ListChecks size={17} />
+            </button>
+            <button className="icon-button" title="İki PDF’i karşılaştır" onClick={() => compareInputRef.current?.click()}>
+              {isComparing ? <LoaderCircle className="spin" size={17} /> : <GitCompareArrows size={17} />}
+            </button>
+            <button className="icon-button" title="PDF’leri birleştir" onClick={() => mergeInputRef.current?.click()}>
+              {isMerging ? <LoaderCircle className="spin" size={17} /> : <FilePlus2 size={17} />}
+            </button>
+            <button className="icon-button" title="Planları gör" onClick={() => setShowPricing(true)}><MoreHorizontal size={18} /></button>
+            <button className="icon-button" title="İmza taleplerini takip et" onClick={() => setShowSignatureRequests(true)}><Check size={17} /></button>
+            <button className="icon-button" title="İmza veya inceleme talebi oluştur" onClick={openSignatureRequest}><PenLine size={17} /></button>
+            {supabaseConfigured && <>
+              <button className="icon-button cloud-menu-button" title="Cloud dosyalarını aç" onClick={openCloudFiles}><Cloud size={17} /></button>
+              <button className="icon-button cloud-menu-button" title="PDF’i cloud’a kaydet" onClick={saveCurrentToCloud}>
+                {isCloudSaving ? <LoaderCircle className="spin" size={17} /> : <CloudUpload size={17} />}
+              </button>
+              <button className="icon-button cloud-menu-button" title="Cloud hesabından çıkış" onClick={signOut}><LogOut size={17} /></button>
+            </>}
+            <button className="export-button" onClick={downloadCurrentPdf}>
+              <Download size={15} /> Export
+            </button>
+            <button className="avatar" title="Hesap ayarları" onClick={() => { setProfileError(''); setShowAccount(true) }}>{session.user.user_metadata?.full_name?.[0]?.toUpperCase() || session.user.email?.[0]?.toUpperCase() || 'C'}</button>
+          </> : supabaseConfigured && <>
+            <button className="cloud-login-button" onClick={() => { setAuthMode('login'); setAuthError(''); setShowAuth(true) }}><LogIn size={14} /> Giriş yap</button>
+            <button className="account-create-button" onClick={() => { setAuthMode('signup'); setAuthError(''); setShowAuth(true) }}>Hesap oluştur</button>
+          </>}
           <input ref={compareInputRef} type="file" accept="application/pdf" hidden onChange={handleCompareFile} />
           <input ref={mergeInputRef} type="file" accept="application/pdf" multiple hidden onChange={handleMergeFiles} />
         </div>
