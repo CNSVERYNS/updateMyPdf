@@ -169,13 +169,25 @@ function App() {
     setCloudFiles(data.files || [])
   }
 
-  const handleAuthSubmit = async ({ email, password, fullName }) => {
+  const openAuthPrompt = () => {
+    setAuthMode('signup')
+    setAuthError('')
+    setShowAuth(true)
+  }
+
+  const requireAccount = () => {
+    if (session) return true
+    openAuthPrompt()
+    return false
+  }
+
+  const handleAuthSubmit = async ({ email, password, fullName, marketingOptIn }) => {
     if (!supabase) return
     setAuthBusy(true)
     setAuthError('')
     try {
       const result = authMode === 'signup'
-        ? await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName?.trim() || email }, emailRedirectTo: window.location.origin } })
+        ? await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName?.trim() || email, marketing_consent: Boolean(marketingOptIn), marketing_consent_at: marketingOptIn ? new Date().toISOString() : null }, emailRedirectTo: window.location.origin } })
         : await supabase.auth.signInWithPassword({ email, password })
       if (result.error) throw result.error
       if (authMode === 'signup' && !result.data.session) {
@@ -194,12 +206,12 @@ function App() {
     }
   }
 
-  const handleProfileSave = async ({ fullName, password }) => {
+  const handleProfileSave = async ({ fullName, password, marketingConsent }) => {
     if (!supabase) return
     setProfileBusy(true)
     setProfileError('')
     try {
-      const updates = { data: { full_name: fullName.trim() } }
+      const updates = { data: { full_name: fullName.trim(), marketing_consent: Boolean(marketingConsent), marketing_consent_at: marketingConsent ? (session.user.user_metadata?.marketing_consent_at || new Date().toISOString()) : null } }
       if (password.trim()) updates.password = password.trim()
       const result = await supabase.auth.updateUser(updates)
       if (result.error) throw result.error
@@ -223,7 +235,7 @@ function App() {
   const uploadCurrentToCloud = async () => {
     if (!file) throw new Error('Önce bir PDF yüklemelisin.')
     if (!session) {
-      setShowAuth(true)
+      openAuthPrompt()
       throw new Error('Önce Cloud hesabına giriş yapmalısın.')
     }
     const formData = new FormData()
@@ -238,7 +250,7 @@ function App() {
   const saveCurrentToCloud = async () => {
     if (!file) return
     if (!session) {
-      setShowAuth(true)
+      openAuthPrompt()
       return
     }
     setIsCloudSaving(true)
@@ -264,7 +276,7 @@ function App() {
     }
     if (!session) {
       setAuthMode('login')
-      setShowAuth(true)
+      openAuthPrompt()
       return
     }
     setSignatureRequestError('')
@@ -306,7 +318,7 @@ function App() {
 
   const openCloudFiles = async () => {
     if (!session) {
-      setShowAuth(true)
+      openAuthPrompt()
       return
     }
     try {
@@ -350,6 +362,7 @@ function App() {
   }, [currentPage, pageCount])
 
   const setPdf = (selectedFile) => {
+    if (!requireAccount()) return
     if (!selectedFile || selectedFile.type !== 'application/pdf') return
     if (fileUrl) URL.revokeObjectURL(fileUrl)
     setFile(selectedFile)
@@ -360,7 +373,7 @@ function App() {
     setCurrentPage(1)
     const infoFormData = new FormData()
     infoFormData.append('file', selectedFile)
-    apiFetch('/api/pdf/info', { method: 'POST', body: infoFormData })
+    apiFetch('/api/pdf/info', { method: 'POST', headers: authHeaders(), body: infoFormData })
       .then((response) => response.ok ? response.json() : null)
       .then((data) => { if (data?.pageCount) setPageCount(data.pageCount); if (data?.title) setPdfTitle(data.title) })
       .catch(() => {})
@@ -375,9 +388,16 @@ function App() {
     setChanges([])
   }
 
-  const handleFileChange = (event) => setPdf(event.target.files?.[0])
+  const handleFileChange = (event) => {
+    setPdf(event.target.files?.[0])
+    event.target.value = ''
+  }
 
   const handleImageChange = (event) => {
+    if (!requireAccount()) {
+      event.target.value = ''
+      return
+    }
     const selectedImage = event.target.files?.[0]
     event.target.value = ''
     if (!selectedImage || !['image/png', 'image/jpeg'].includes(selectedImage.type)) return
@@ -386,6 +406,10 @@ function App() {
   }
 
   const handleCompareFile = async (event) => {
+    if (!requireAccount()) {
+      event.target.value = ''
+      return
+    }
     const secondFile = event.target.files?.[0]
     event.target.value = ''
     if (!secondFile || secondFile.type !== 'application/pdf') return
@@ -398,7 +422,7 @@ function App() {
       const formData = new FormData()
       formData.append('files', file)
       formData.append('files', secondFile)
-      const result = await apiFetch('/api/pdf/compare', { method: 'POST', body: formData })
+      const result = await apiFetch('/api/pdf/compare', { method: 'POST', headers: authHeaders(), body: formData })
       const rawResponse = await result.text()
       const data = rawResponse ? JSON.parse(rawResponse) : {}
       if (!result.ok) throw new Error(data.error || 'PDF karşılaştırılamadı.')
@@ -412,6 +436,10 @@ function App() {
   }
 
   const handleMergeFiles = async (event) => {
+    if (!requireAccount()) {
+      event.target.value = ''
+      return
+    }
     const selectedFiles = Array.from(event.target.files || []).filter((item) => item.type === 'application/pdf')
     event.target.value = ''
     if (!file) {
@@ -424,7 +452,7 @@ function App() {
       const formData = new FormData()
       formData.append('files', file)
       selectedFiles.forEach((selectedFile) => formData.append('files', selectedFile))
-      const result = await apiFetch('/api/pdf/merge', { method: 'POST', body: formData })
+      const result = await apiFetch('/api/pdf/merge', { method: 'POST', headers: authHeaders(), body: formData })
       if (!result.ok) {
         const data = await result.json().catch(() => ({}))
         throw new Error(data.error || 'PDF’ler birleştirilemedi.')
@@ -485,6 +513,7 @@ function App() {
   const submitPrompt = async (prompt = input) => {
     const cleanPrompt = prompt.trim()
     if (!cleanPrompt || isThinking) return
+    if (!requireAccount()) return
     const nextUserMessage = { id: Date.now(), role: 'user', text: cleanPrompt }
     setMessages((current) => [...current, nextUserMessage])
     setInput('')
@@ -504,7 +533,7 @@ function App() {
       formData.append('prompt', cleanPrompt)
       formData.append('file', file)
       if (imageFile) formData.append('image', imageFile)
-      const result = await apiFetch('/api/ai/command', { method: 'POST', body: formData })
+      const result = await apiFetch('/api/ai/command', { method: 'POST', headers: authHeaders(), body: formData })
       const rawResponse = await result.text()
       let data = {}
       try {
@@ -526,7 +555,7 @@ function App() {
         setPageCount(0)
         const infoFormData = new FormData()
         infoFormData.append('file', editedFile)
-        apiFetch('/api/pdf/info', { method: 'POST', body: infoFormData })
+        apiFetch('/api/pdf/info', { method: 'POST', headers: authHeaders(), body: infoFormData })
           .then((response) => response.ok ? response.json() : null)
           .then((info) => { if (info?.pageCount) { setPageCount(info.pageCount); setCurrentPage((current) => Math.min(current, info.pageCount)) }; if (info?.title) setPdfTitle(info.title) })
           .catch(() => {})
@@ -575,6 +604,7 @@ function App() {
   }
 
   const resetChanges = () => {
+    if (!requireAccount()) return
     if (fileUrl && originalFile && file !== originalFile) URL.revokeObjectURL(fileUrl)
     if (originalFile && file !== originalFile) {
       setFile(originalFile)
@@ -582,7 +612,7 @@ function App() {
       setCurrentPage(1)
       const infoFormData = new FormData()
       infoFormData.append('file', originalFile)
-      apiFetch('/api/pdf/info', { method: 'POST', body: infoFormData })
+      apiFetch('/api/pdf/info', { method: 'POST', headers: authHeaders(), body: infoFormData })
         .then((response) => response.ok ? response.json() : null)
         .then((info) => { if (info?.pageCount) setPageCount(info.pageCount); if (info?.title) setPdfTitle(info.title) })
         .catch(() => {})
@@ -595,6 +625,7 @@ function App() {
   }
 
   const downloadCurrentPdf = () => {
+    if (!requireAccount()) return
     if (!fileUrl || !file) return
     const link = document.createElement('a')
     link.href = fileUrl
@@ -622,20 +653,20 @@ function App() {
         </div>
 
         <div className="top-actions">
-          <button className="icon-button" title="Geçmişi göster" onClick={() => setShowHistory((value) => !value)}>
+          <button className="icon-button" title="Geçmişi göster" onClick={() => { if (requireAccount()) setShowHistory((value) => !value) }}>
             <History size={17} />
           </button>
           <button className="icon-button" title="Yetenekleri göster" onClick={() => setShowCapabilities((value) => !value)}>
             <ListChecks size={17} />
           </button>
-          <button className="icon-button" title="İki PDF’i karşılaştır" onClick={() => compareInputRef.current?.click()}>
+          <button className="icon-button" title="İki PDF’i karşılaştır" onClick={() => { if (requireAccount()) compareInputRef.current?.click() }}>
             {isComparing ? <LoaderCircle className="spin" size={17} /> : <GitCompareArrows size={17} />}
           </button>
-          <button className="icon-button" title="PDF’leri birleştir" onClick={() => mergeInputRef.current?.click()}>
+          <button className="icon-button" title="PDF’leri birleştir" onClick={() => { if (requireAccount()) mergeInputRef.current?.click() }}>
             {isMerging ? <LoaderCircle className="spin" size={17} /> : <FilePlus2 size={17} />}
           </button>
           <button className="icon-button" title="More options"><MoreHorizontal size={18} /></button>
-          <button className="icon-button" title="İmza taleplerini takip et" onClick={() => { if (!session) { setAuthMode('login'); setShowAuth(true) } else setShowSignatureRequests(true) }}><Check size={17} /></button>
+          <button className="icon-button" title="İmza taleplerini takip et" onClick={() => { if (!session) openAuthPrompt(); else setShowSignatureRequests(true) }}><Check size={17} /></button>
           <button className="icon-button" title="İmza veya inceleme talebi oluştur" onClick={openSignatureRequest}><PenLine size={17} /></button>
           {supabaseConfigured && (session ? <>
             <button className="icon-button cloud-menu-button" title="Cloud dosyalarını aç" onClick={openCloudFiles}><Cloud size={17} /></button>
@@ -647,7 +678,7 @@ function App() {
           <button className="export-button" onClick={downloadCurrentPdf}>
             <Download size={15} /> Export
           </button>
-          <button className="avatar" title="Hesap ayarları" onClick={() => { setProfileError(''); setShowAccount(true) }}>{session?.user?.user_metadata?.full_name?.[0]?.toUpperCase() || session?.user?.email?.[0]?.toUpperCase() || 'C'}</button>
+          <button className="avatar" title="Hesap ayarları" onClick={() => { if (!requireAccount()) return; setProfileError(''); setShowAccount(true) }}>{session?.user?.user_metadata?.full_name?.[0]?.toUpperCase() || session?.user?.email?.[0]?.toUpperCase() || 'C'}</button>
           <input ref={compareInputRef} type="file" accept="application/pdf" hidden onChange={handleCompareFile} />
           <input ref={mergeInputRef} type="file" accept="application/pdf" multiple hidden onChange={handleMergeFiles} />
         </div>
@@ -676,7 +707,7 @@ function App() {
             className={`viewer-stage ${isDragging ? 'dragging' : ''}`}
             onDragOver={(event) => { event.preventDefault(); setIsDragging(true) }}
             onDragLeave={() => setIsDragging(false)}
-            onDrop={(event) => { event.preventDefault(); setIsDragging(false); setPdf(event.dataTransfer.files?.[0]) }}
+            onDrop={(event) => { event.preventDefault(); setIsDragging(false); if (requireAccount()) setPdf(event.dataTransfer.files?.[0]) }}
           >
             {fileUrl ? (
               <div className="uploaded-pdf" style={previewScale}>
@@ -688,7 +719,7 @@ function App() {
                   <div className="upload-icon"><Upload size={22} /></div>
                   <h2>PDF’ini buraya bırak</h2>
                   <p>veya cihazından bir dosya seçerek başla</p>
-                  <button className="choose-file-button" onClick={() => fileInputRef.current?.click()}>
+                  <button className="choose-file-button" onClick={() => { if (requireAccount()) fileInputRef.current?.click() }}>
                     <FilePlus2 size={16} /> PDF seç
                   </button>
                   <span className="drop-hint">PDF dosyaları · Maks. 50 MB</span>
@@ -714,7 +745,7 @@ function App() {
               <div className="ai-avatar"><Sparkles size={16} /></div>
               <div><h1>AI assistant</h1><p><span className={`online-dot ${aiStatus === 'error' ? 'error' : ''}`} /> {aiStatus === 'live' ? 'Live AI connected' : aiStatus === 'error' ? 'Connection issue' : 'Ready to edit'}</p></div>
             </div>
-            <button className="icon-button light" title="Sohbeti temizle" onClick={() => setMessages(initialMessages)}><Trash2 size={16} /></button>
+            <button className="icon-button light" title="Sohbeti temizle" onClick={() => { if (requireAccount()) setMessages(initialMessages) }}><Trash2 size={16} /></button>
           </div>
 
           <div className="chat-body">
@@ -755,7 +786,7 @@ function App() {
               </button>
             </div>
             <div className="composer-meta">
-              <button className="attach-image-button" type="button" onClick={() => imageInputRef.current?.click()}><ImagePlus size={12} /> {imageFile ? 'Görsel hazır' : 'Görsel ekle'}</button>
+              <button className="attach-image-button" type="button" onClick={() => { if (requireAccount()) imageInputRef.current?.click() }}><ImagePlus size={12} /> {imageFile ? 'Görsel hazır' : 'Görsel ekle'}</button>
               <span><MessageSquareText size={12} /> Enter to send</span><span>AI can make mistakes</span>
             </div>
             <input ref={imageInputRef} type="file" accept="image/png,image/jpeg" hidden onChange={handleImageChange} />
@@ -998,10 +1029,11 @@ function SignatureRequestsDrawer({ session, authHeaders, onClose }) {
 function AccountModal({ session, busy, error, onClose, onSubmit }) {
   const [fullName, setFullName] = useState(session.user.user_metadata?.full_name || '')
   const [password, setPassword] = useState('')
+  const [marketingConsent, setMarketingConsent] = useState(Boolean(session.user.user_metadata?.marketing_consent))
 
   const submit = (event) => {
     event.preventDefault()
-    onSubmit({ fullName: fullName.trim(), password })
+    onSubmit({ fullName: fullName.trim(), password, marketingConsent })
   }
 
   return (
@@ -1013,6 +1045,7 @@ function AccountModal({ session, busy, error, onClose, onSubmit }) {
           <label>Ad soyad<input value={fullName} onChange={(event) => setFullName(event.target.value)} required autoComplete="name" /></label>
           <label>Kayıtlı e-posta<input value={session.user.email || ''} readOnly disabled /></label>
           <label>Yeni şifre (opsiyonel)<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={6} autoComplete="new-password" placeholder="Değiştirmek istemiyorsan boş bırak" /></label>
+          <label className="auth-checkbox"><input type="checkbox" checked={marketingConsent} onChange={(event) => setMarketingConsent(event.target.checked)} /><span>Ürün güncellemeleri ve fırsatları hakkında e-posta almak istiyorum.</span></label>
           {error && <div className="auth-error">{error}</div>}
           <button className="auth-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} Kaydet</button>
         </form>
@@ -1025,21 +1058,23 @@ function AuthModal({ mode, busy, error, onModeChange, onClose, onSubmit }) {
   const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [marketingOptIn, setMarketingOptIn] = useState(false)
 
   const submit = (event) => {
     event.preventDefault()
-    onSubmit({ email: email.trim(), password, fullName: fullName.trim() })
+    onSubmit({ email: email.trim(), password, fullName: fullName.trim(), marketingOptIn })
   }
 
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <div className="auth-modal">
         <div className="auth-modal-heading"><div><span>PDF MANIAC CLOUD</span><h2>{mode === 'login' ? 'Hesabına giriş yap' : 'Hesap oluştur'}</h2></div><button className="icon-button light" onClick={onClose}><X size={17} /></button></div>
-        <p className="auth-description">PDF’lerini private storage’da saklamak ve cihazlar arasında açmak için kullan.</p>
+        <p className="auth-description">PDF yüklemek, AI ile düzenlemek ve dışa aktarmak için ücretsiz hesabınla giriş yap veya hesap oluştur.</p>
         <form onSubmit={submit}>
           {mode === 'signup' && <label>Ad soyad<input value={fullName} onChange={(event) => setFullName(event.target.value)} required autoComplete="name" placeholder="Ad Soyad" /></label>}
           <label>E-posta<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required autoComplete="email" /></label>
           <label>Şifre<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required minLength={6} autoComplete={mode === 'login' ? 'current-password' : 'new-password'} /></label>
+          {mode === 'signup' && <label className="auth-checkbox"><input type="checkbox" checked={marketingOptIn} onChange={(event) => setMarketingOptIn(event.target.checked)} /><span>Ürün güncellemeleri ve fırsatları hakkında e-posta almak istiyorum.</span></label>}
           {error && <div className="auth-error">{error}</div>}
           <button className="auth-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <LogIn size={16} />} {mode === 'login' ? 'Giriş yap' : 'Kayıt ol'}</button>
         </form>

@@ -56,6 +56,17 @@ const getSupabaseUser = async (request) => {
   return { admin, user: data.user }
 }
 
+const requireAuth = (request, response, next) => {
+  getSupabaseUser(request)
+    .then((context) => {
+      request.supabaseContext = context
+      next()
+    })
+    .catch((error) => {
+      response.status(error.status || 401).json({ error: error.message || 'Authentication required.' })
+    })
+}
+
 const safeFileName = (value) => String(value || 'document.pdf')
   .replace(/[^a-zA-Z0-9._-]+/g, '-')
   .replace(/^-+|-+$/g, '')
@@ -821,6 +832,9 @@ app.get('/api/signatures/:id/audit', async (request, response) => {
 app.get('/api/capabilities', (_request, response) => {
   response.json(getCapabilitySummary())
 })
+
+app.use('/api/ai', requireAuth)
+app.use('/api/pdf', requireAuth)
 
 app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name: 'image', maxCount: 1 }]), async (request, response) => {
   const prompt = String(request.body?.prompt || '').trim()
