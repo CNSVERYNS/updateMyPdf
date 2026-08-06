@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs'
 import fontkit from '@pdf-lib/fontkit'
-import { beginText, endText, PDFArray, PDFBool, PDFDocument, PDFDict, PDFName, PDFNumber, PDFString, popGraphicsState, pushGraphicsState, setCharacterSqueeze, setFillingColor, setFontAndSize, setTextMatrix, showText, StandardFonts, degrees, rgb } from 'pdf-lib'
+import { PDFArray, PDFBool, PDFDocument, PDFDict, PDFName, PDFNumber, PDFString, StandardFonts, degrees, rgb } from 'pdf-lib'
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
 import { redactPdfBuffer } from './pdf-render.js'
 
@@ -215,18 +215,10 @@ const distributeTranslatedLines = (replacement, sourceLines, fonts, pageWidth) =
 const drawFittedText = (pdfPage, text, { x, y, size, font, maxWidth, color }) => {
   if (!text) return
   const naturalWidth = font.widthOfTextAtSize(text, size)
-  const squeeze = naturalWidth > maxWidth ? Math.max(10, (maxWidth / naturalWidth) * 100) : 100
-  pdfPage.pushOperators(
-    pushGraphicsState(),
-    beginText(),
-    setFillingColor(color),
-    setFontAndSize(font.name, size),
-    setCharacterSqueeze(squeeze),
-    setTextMatrix(1, 0, 0, 1, x, y),
-    showText(font.encodeText(text)),
-    endText(),
-    popGraphicsState(),
-  )
+  const fittedSize = naturalWidth > maxWidth
+    ? Math.max(6, size * (maxWidth / naturalWidth))
+    : size
+  pdfPage.drawText(text, { x, y, size: fittedSize, font, color })
 }
 
 const translateTextBlock = async (pdfDocument, pagesWithText, action) => {
