@@ -34,6 +34,8 @@ const getTextItems = async (pdfBytes) => {
             y: item.transform?.[5] || 0,
             width: item.width || 0,
             height: item.height || Math.abs(item.transform?.[3] || 10),
+            fontName: item.fontName || '',
+            fontFamily: content.styles?.[item.fontName || '']?.fontFamily || '',
           })),
       })
     }
@@ -124,7 +126,20 @@ const groupMatchedTextLines = (matches) => {
       const left = Math.min(...items.map((item) => item.x + (Number.isFinite(item.startRatio) ? item.startRatio : 0)))
       const right = Math.max(...items.map((item) => item.x + (Number.isFinite(item.endRatio) ? item.endRatio : item.width)))
       const height = Math.max(...items.map((item) => Math.max(6, item.height || 10)))
-      return { text: items.map((item) => item.text).join(' ').replace(/\s+/g, ' ').trim(), x: left, right, y: Math.max(...items.map((item) => item.y)), height, size: height }
+      const text = items.map((item) => item.text).join(' ').replace(/\s+/g, ' ').trim()
+      const fontDescriptor = items.map((item) => `${item.fontName} ${item.fontFamily}`).join(' ')
+      const letters = text.replace(/[^\p{L}]+/gu, '')
+      const uppercaseHeading = letters.length >= 3 && letters === letters.toLocaleUpperCase('en-US') && text.length <= 140
+      return {
+        text,
+        x: left,
+        right,
+        y: Math.max(...items.map((item) => item.y)),
+        height,
+        size: height,
+        fontWeight: /bold|black|heavy|semibold|demi/i.test(fontDescriptor) || uppercaseHeading ? 'bold' : 'normal',
+        fontStyle: /italic|oblique/i.test(fontDescriptor) ? 'italic' : 'normal',
+      }
     })
 }
 
@@ -148,7 +163,6 @@ const distributeTranslatedLines = (replacement, sourceLines) => {
 
 const translateTextBlock = async (pdfDocument, pagesWithText, action) => {
   const selectedPages = action.page ? pagesWithText.filter((page) => page.pageNumber === action.page) : pagesWithText
-  const font = await getFont(pdfDocument, action)
   let matchCount = 0
 
   for (const pageData of selectedPages) {
@@ -168,10 +182,12 @@ const translateTextBlock = async (pdfDocument, pagesWithText, action) => {
       // font, weight, and size remain intact (for example an English heading
       // inside an otherwise foreign-language page).
       if (normalizeText(sourceLine.text) === normalizeText(translatedLine)) continue
+      const font = await getFont(pdfDocument, { ...action, fontWeight: sourceLine.fontWeight, fontStyle: sourceLine.fontStyle })
       const left = Math.max(6, sourceLine.x - 2)
       const width = Math.max(24, Math.min(pageWidth - left - 6, sourceLine.right - sourceLine.x + 4))
-      let fontSize = Math.max(5, Math.min(18, sourceLine.size))
-      while (font.widthOfTextAtSize(translatedLine, fontSize) > width && fontSize > 5) fontSize = Math.max(5, fontSize - 0.5)
+      const minimumReadableSize = sourceLine.size >= 15 ? 9 : sourceLine.size >= 10 ? 7.5 : 5.5
+      let fontSize = Math.max(minimumReadableSize, Math.min(18, sourceLine.size))
+      while (font.widthOfTextAtSize(translatedLine, fontSize) > width && fontSize > minimumReadableSize) fontSize = Math.max(minimumReadableSize, fontSize - 0.5)
       pdfPage.drawRectangle({ x: left, y: Math.max(0, sourceLine.y - sourceLine.height * 0.35 - 2), width, height: Math.max(10, sourceLine.height * 1.45), color: rgb(1, 1, 1), opacity: 1 })
       if (translatedLine) pdfPage.drawText(translatedLine, { x: left + 1, y: sourceLine.y, size: fontSize, font, color: rgb(0.08, 0.08, 0.08) })
     }
