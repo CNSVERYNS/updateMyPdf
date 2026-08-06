@@ -535,46 +535,91 @@ const documentAssistantSchema = {
   additionalProperties: false,
   properties: {
     status: { type: 'string', enum: ['answer', 'needs_info', 'draft_ready'] },
-    reply: { type: 'string' },
-    documentType: { anyOf: [{ type: 'string' }, { type: 'null' }] },
-    documentTitle: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    reply: { type: 'string', maxLength: 1800 },
+    documentType: { anyOf: [{ type: 'string', maxLength: 180 }, { type: 'null' }] },
+    documentTitle: { anyOf: [{ type: 'string', maxLength: 180 }, { type: 'null' }] },
+    documentLanguage: { anyOf: [{ type: 'string', maxLength: 80 }, { type: 'null' }] },
+    jurisdiction: { anyOf: [{ type: 'string', maxLength: 240 }, { type: 'null' }] },
     questions: {
       type: 'array',
+      maxItems: 4,
       items: {
         type: 'object',
         additionalProperties: false,
         properties: {
-          id: { type: 'string' },
-          label: { type: 'string' },
-          question: { type: 'string' },
+          id: { type: 'string', maxLength: 80 },
+          label: { type: 'string', maxLength: 100 },
+          question: { type: 'string', maxLength: 500 },
           kind: { type: 'string', enum: ['text', 'textarea', 'date', 'number', 'email', 'select'] },
           required: { type: 'boolean' },
-          options: { anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'null' }] },
-          help: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+          options: { anyOf: [{ type: 'array', maxItems: 12, items: { type: 'string', maxLength: 120 } }, { type: 'null' }] },
+          help: { anyOf: [{ type: 'string', maxLength: 240 }, { type: 'null' }] },
         },
         required: ['id', 'label', 'question', 'kind', 'required', 'options', 'help'],
       },
     },
     facts: {
       type: 'array',
+      maxItems: 80,
       items: {
         type: 'object',
         additionalProperties: false,
-        properties: { key: { type: 'string' }, value: { type: 'string' } },
+        properties: { key: { type: 'string', maxLength: 100 }, value: { type: 'string', maxLength: 1200 } },
         required: ['key', 'value'],
       },
     },
-    documentContent: { anyOf: [{ type: 'string' }, { type: 'null' }] },
-    complianceNotes: { type: 'array', items: { type: 'string' } },
+    researchNeeded: { type: 'boolean' },
+    researchQuery: { anyOf: [{ type: 'string', maxLength: 500 }, { type: 'null' }] },
+    researchSources: {
+      type: 'array',
+      maxItems: 8,
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          title: { type: 'string', maxLength: 180 },
+          url: { type: 'string', maxLength: 1000 },
+          why: { type: 'string', maxLength: 240 },
+        },
+        required: ['title', 'url', 'why'],
+      },
+    },
+    documentContent: { anyOf: [{ type: 'string', maxLength: 60000 }, { type: 'null' }] },
+    complianceNotes: { type: 'array', maxItems: 8, items: { type: 'string', maxLength: 500 } },
   },
-  required: ['status', 'reply', 'documentType', 'documentTitle', 'questions', 'facts', 'documentContent', 'complianceNotes'],
+  required: ['status', 'reply', 'documentType', 'documentTitle', 'documentLanguage', 'jurisdiction', 'questions', 'facts', 'researchNeeded', 'researchQuery', 'researchSources', 'documentContent', 'complianceNotes'],
 }
 
-const documentAssistantInstructions = `You are the document concierge for updateMyPDF. You are a warm, precise executive assistant who helps users collect facts and create professional document drafts in Turkish or English.
-Use the conversation history and the newest user message. Never invent critical facts, names, addresses, dates, prices, legal choices, or obligations. If material information is missing, return status needs_info and ask the smallest useful set of clear questions, no more than four at a time. Questions must be answerable by a normal person and should include a helpful example when useful.
-When the user asks for a lease, rental agreement, vehicle rental agreement, business contract, NDA, invoice, employment document, proposal, policy, letter, or another document, identify the document type and collect the relevant facts before drafting. Always ask for jurisdiction and document language when the document may have legal effect. For a Chicago residential lease, explicitly clarify that the property is inside the City of Chicago rather than a suburb, whether it is a whole unit or room, whether the owner occupies the building, whether it is subsidized or otherwise regulated, the parties, property address, term, rent, deposits/fees, utilities, pets, parking, furnishings, maintenance, entry, smoking, renewal, and special terms. Do not assume the Chicago Residential Landlord and Tenant Ordinance applies; flag applicability for legal review.
-For vehicle rentals, ask vehicle details, renter/owner identity, rental dates, mileage, fuel/charging, price, deposit, insurance, damage, roadside assistance, prohibited use, return, late fees, and jurisdiction. For business agreements, ask the parties, scope/deliverables, payment, term, ownership/IP, confidentiality, warranties, liability, termination, dispute venue, and governing law. Adapt the questions to other document types instead of using a fixed checklist.
-When enough information is available, return status draft_ready and produce a complete, well-structured documentContent with headings and clauses. Use explicit placeholders only for genuinely optional items and list them in complianceNotes. For legal documents, include a short review note in complianceNotes that the draft is not legal advice, must be checked against current local/state/federal law, and should be reviewed by a licensed attorney before signing. Do not claim the document is legally compliant or enforceable. Keep reply concise but helpful. Never return markdown fences around the JSON.`
+const documentAssistantInstructions = `You are updateMyPDF's general-purpose document concierge: think like a capable ChatGPT assistant, then turn the completed conversation into a professional PDF. This is not a fixed list of lease, vehicle, or business templates. Support any reasonable request: contracts, policies, letters, applications, reports, invoices, proposals, forms, checklists, notices, plans, translations, and custom documents in any language.
+Use the newest user message, the compact profile, and only the recent conversation. Preserve facts already collected. Never invent material facts, names, addresses, dates, prices, legal choices, or obligations. Do not ask again for facts already in the profile. Ask no more than four high-value questions per turn; group related details into one question and give a short example. If the user is only asking for advice or explanation, answer directly with status answer and do not force document creation.
+For a document request, first identify the user's outcome, audience, document type, language, tone, jurisdiction, and required format. Ask for jurisdiction at the right level (country, state/province/region, city/municipality, district, or governing law) whenever the document has legal, tax, employment, immigration, financial, medical, safety, or regulatory consequences. If the location is unknown, ask for it instead of assuming Chicago, the United States, or any other place. Adapt the intake to the request; never expose a long generic checklist.
+Research policy: do not use web search during routine intake or for purely creative/personal documents. When the user asks for research, or when current/local rules materially affect a document, set researchNeeded true and use the web_search tool before drafting. Search only after enough facts and jurisdiction are known. Prefer primary government, regulator, court, official standards, or authoritative institutional sources; use current sources and compare sources when rules conflict. Never imply that a search result alone makes the document legally compliant. Put the most useful source URLs in researchSources and explain their role in why. If a source cannot be verified, say so and leave a review note.
+When the required facts are complete, return status draft_ready and write documentContent as a complete, polished, standalone document in the requested language. Use sensible headings, definitions, dates, payment or performance terms, responsibilities, exceptions, termination, dispute or governing-law terms only when relevant, signature blocks, and appendices when useful. Do not include markdown fences. Use placeholders only for genuinely optional facts; list every placeholder in complianceNotes. Keep the chat reply concise and mention the document is ready. For documents with legal or regulated effect, complianceNotes must say that this is a draft, not legal advice, current rules and source applicability must be checked, and a qualified local professional should review it before reliance or signature. Never claim enforceability or guaranteed compliance.`
+
+const assistantModel = (likelyDraft = false) => process.env.OPENAI_ASSISTANT_MODEL || (likelyDraft ? 'gpt-5.6-terra' : 'gpt-5.6-luna')
+const assistantReasoning = () => process.env.OPENAI_ASSISTANT_REASONING || 'low'
+const normalizeAssistantSources = (sources) => (Array.isArray(sources) ? sources : [])
+  .filter((source) => source && typeof source.url === 'string' && /^https?:\/\//i.test(source.url))
+  .map((source) => ({ title: String(source.title || source.url).slice(0, 180), url: source.url.slice(0, 1000), why: String(source.why || 'Kaynak olarak kullanıldı.').slice(0, 240) }))
+  .filter((source, index, list) => list.findIndex((candidate) => candidate.url === source.url) === index)
+  .slice(0, 8)
+
+const extractResponseSources = (result) => {
+  const sources = []
+  for (const item of Array.isArray(result?.output) ? result.output : []) {
+    for (const content of Array.isArray(item?.content) ? item.content : []) {
+      for (const annotation of Array.isArray(content?.annotations) ? content.annotations : []) {
+        const citation = annotation?.url_citation || annotation
+        if (citation?.url) sources.push({ title: citation.title || citation.url, url: citation.url, why: 'AI web araştırmasında kullanıldı.' })
+      }
+    }
+    const action = item?.action
+    for (const source of Array.isArray(action?.sources) ? action.sources : []) {
+      if (source?.url) sources.push({ title: source.title || source.url, url: source.url, why: 'AI web araştırmasında kullanıldı.' })
+    }
+  }
+  return normalizeAssistantSources(sources)
+}
 
 const capabilityGuidance = getCapabilitySummary().capabilities
   .map((capability) => `${capability.id}: ${capability.status}`)
@@ -1144,23 +1189,37 @@ app.use('/api/ai', guestAiGuard)
 
 app.post('/api/ai/assistant', async (request, response) => {
   const message = String(request.body?.message || '').trim().slice(0, 8000)
+  const phase = String(request.body?.phase || 'intake').slice(0, 32)
   const conversation = Array.isArray(request.body?.conversation)
-    ? request.body.conversation.filter((item) => item && ['user', 'assistant'].includes(item.role) && typeof item.content === 'string').slice(-16)
+    ? request.body.conversation.filter((item) => item && ['user', 'assistant'].includes(item.role) && typeof item.content === 'string').slice(-8)
     : []
+  const sourceProfile = request.body?.profile && typeof request.body.profile === 'object' ? request.body.profile : {}
+  const profile = {
+    documentType: typeof sourceProfile.documentType === 'string' ? sourceProfile.documentType.slice(0, 180) : null,
+    documentTitle: typeof sourceProfile.documentTitle === 'string' ? sourceProfile.documentTitle.slice(0, 180) : null,
+    documentLanguage: typeof sourceProfile.documentLanguage === 'string' ? sourceProfile.documentLanguage.slice(0, 80) : null,
+    jurisdiction: typeof sourceProfile.jurisdiction === 'string' ? sourceProfile.jurisdiction.slice(0, 240) : null,
+    facts: Array.isArray(sourceProfile.facts) ? sourceProfile.facts.filter((fact) => fact && typeof fact.key === 'string' && typeof fact.value === 'string').slice(-50).map((fact) => ({ key: fact.key.slice(0, 100), value: fact.value.slice(0, 1200) })) : [],
+  }
   if (!message) return response.status(400).json({ error: 'Mesaj gerekli.' })
   try {
     const client = getClient()
+    const likelyDraft = phase === 'draft' || profile.facts.length >= 6 || message.length >= 320
+    const profileContext = JSON.stringify(profile)
     const input = [
       ...conversation.map((item) => ({ role: item.role, content: [{ type: item.role === 'assistant' ? 'output_text' : 'input_text', text: item.content.slice(0, 8000) }] })),
-      { role: 'user', content: [{ type: 'input_text', text: message }] },
+      { role: 'user', content: [{ type: 'input_text', text: `Current user message:\n${message}\n\nCompact structured profile from earlier turns:\n${profileContext}` }] },
     ]
     const result = await client.responses.create({
-      model: process.env.OPENAI_ASSISTANT_MODEL || process.env.OPENAI_MODEL || 'gpt-5.6',
-      reasoning: { effort: process.env.OPENAI_ASSISTANT_REASONING || 'high' },
+      model: assistantModel(likelyDraft),
+      reasoning: { effort: likelyDraft ? (process.env.OPENAI_ASSISTANT_DRAFT_REASONING || 'medium') : assistantReasoning() },
       store: false,
       instructions: documentAssistantInstructions,
       input,
+      tools: [{ type: 'web_search', search_context_size: likelyDraft ? 'medium' : 'low' }],
+      max_output_tokens: likelyDraft ? 12000 : 1800,
       text: {
+        verbosity: likelyDraft ? 'medium' : 'low',
         format: {
           type: 'json_schema',
           name: 'document_assistant_response',
@@ -1171,6 +1230,8 @@ app.post('/api/ai/assistant', async (request, response) => {
     })
     if (!result.output_text?.trim()) throw new Error('The document assistant returned an empty response.')
     const assistantResult = JSON.parse(result.output_text)
+    const extractedSources = extractResponseSources(result)
+    assistantResult.researchSources = extractedSources.length ? extractedSources : normalizeAssistantSources(assistantResult.researchSources)
     let generatedPdf = null
     let generatedFileName = null
     if (assistantResult.status === 'draft_ready' && assistantResult.documentContent?.trim()) {
@@ -1179,7 +1240,7 @@ app.post('/api/ai/assistant', async (request, response) => {
       generatedPdf = pdfBytes.toString('base64')
       generatedFileName = `${safeFileName(title).replace(/\.pdf$/i, '') || 'document-draft'}.pdf`
     }
-    response.json({ ...assistantResult, generatedPdf, generatedFileName, model: process.env.OPENAI_ASSISTANT_MODEL || process.env.OPENAI_MODEL || 'gpt-5.6' })
+    response.json({ ...assistantResult, generatedPdf, generatedFileName, model: assistantModel(likelyDraft), reasoningEffort: likelyDraft ? (process.env.OPENAI_ASSISTANT_DRAFT_REASONING || 'medium') : assistantReasoning() })
   } catch (error) {
     console.error('[ai-assistant]', error?.message || error)
     const status = error?.status === 401 ? 401 : 500

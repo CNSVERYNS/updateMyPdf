@@ -40,6 +40,7 @@ const apiBaseUrl = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/
 const apiFetch = (path, options) => fetch(`${apiBaseUrl}${path}`, options)
 
 const starterPrompts = [
+  { icon: Sparkles, label: 'Belge oluştur', prompt: 'İstediğim bir belgeyi sıfırdan oluşturmama yardım et.' },
   { icon: Highlighter, label: 'Önemli yerleri işaretle', prompt: 'Önemli cümleleri sarı renkle işaretle.' },
   { icon: FileText, label: 'Özet çıkar', prompt: 'Bu PDF için kısa bir özet hazırla.' },
   { icon: Split, label: 'Sayfaları düzenle', prompt: 'Son sayfayı sil.' },
@@ -49,7 +50,7 @@ const initialMessages = [
   {
     id: 1,
     role: 'assistant',
-    text: 'Merhaba! PDF’in üzerinde ne yapmak istediğini yazabilirsin. Değişiklikleri sağdaki önizlemede anlık olarak göstereceğim.',
+    text: 'Merhaba! Bir PDF düzenleyebilir veya istediğin herhangi bir belgeyi sıfırdan oluşturabilirim. Ne yapmak istersin?',
   },
 ]
 
@@ -152,6 +153,7 @@ function App() {
   const [isCloudSaving, setIsCloudSaving] = useState(false)
   const [currentCloudPath, setCurrentCloudPath] = useState('')
   const [assistantQuestions, setAssistantQuestions] = useState([])
+  const [assistantProfile, setAssistantProfile] = useState(null)
   const [showSignatureRequest, setShowSignatureRequest] = useState(false)
   const [showSignatureRequests, setShowSignatureRequests] = useState(false)
   const [signatureRequestBusy, setSignatureRequestBusy] = useState(false)
@@ -466,6 +468,7 @@ function App() {
     ])
     setChanges([])
     setAssistantQuestions([])
+    setAssistantProfile(null)
   }
 
   const handleFileChange = (event) => {
@@ -592,7 +595,12 @@ function App() {
 
     try {
       if (!file) {
-        const assistantResponse = await apiFetch('/api/ai/assistant', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ message: cleanPrompt, conversation: messages.slice(-16).map((item) => ({ role: item.role, content: item.text })) }) })
+        const assistantResponse = await apiFetch('/api/ai/assistant', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({
+          message: cleanPrompt,
+          phase: assistantProfile?.facts?.length >= 6 ? 'draft' : 'intake',
+          profile: assistantProfile,
+          conversation: messages.slice(-8).map((item) => ({ role: item.role, content: item.text })),
+        }) })
         const assistantRaw = await assistantResponse.text()
         let assistantData = {}
         try {
@@ -602,7 +610,16 @@ function App() {
         }
         if (!assistantResponse.ok) throw new Error(assistantData.error || 'Belge asistanı yanıt veremedi.')
         setAssistantQuestions(assistantData.questions || [])
+        setAssistantProfile({
+          documentType: assistantData.documentType || assistantProfile?.documentType || null,
+          documentTitle: assistantData.documentTitle || assistantProfile?.documentTitle || null,
+          documentLanguage: assistantData.documentLanguage || assistantProfile?.documentLanguage || null,
+          jurisdiction: assistantData.jurisdiction || assistantProfile?.jurisdiction || null,
+          facts: assistantData.facts || assistantProfile?.facts || [],
+          researchSources: assistantData.researchSources || assistantProfile?.researchSources || [],
+        })
         let assistantText = assistantData.reply || 'Belge akışını hazırlıyorum.'
+        if (assistantData.researchSources?.length) assistantText += `\n\nAraştırma kaynakları:\n${assistantData.researchSources.slice(0, 4).map((source) => `• ${source.title}: ${source.url}`).join('\n')}`
         if (assistantData.generatedPdf) {
           setAssistantQuestions([])
           const generatedFile = decodePdfFile(assistantData.generatedPdf, assistantData.generatedFileName || 'document-draft.pdf')
@@ -847,7 +864,7 @@ function App() {
               <div className="ai-avatar"><Sparkles size={16} /></div>
               <div><h1>AI assistant</h1><p><span className={`online-dot ${aiStatus === 'error' ? 'error' : ''}`} /> {aiStatus === 'live' ? 'Live AI connected' : aiStatus === 'error' ? 'Connection issue' : 'Ready to edit'}</p></div>
             </div>
-            <button className="icon-button light" title="Sohbeti temizle" onClick={() => { setMessages(initialMessages); setAssistantQuestions([]) }}><Trash2 size={16} /></button>
+            <button className="icon-button light" title="Sohbeti temizle" onClick={() => { setMessages(initialMessages); setAssistantQuestions([]); setAssistantProfile(null) }}><Trash2 size={16} /></button>
           </div>
 
           <div className="chat-body">
