@@ -401,3 +401,12 @@ body { color: var(--text); background: var(--bg); }
 .workspace > .chat-panel { min-height: 0; overflow: hidden; }
 .chat-body { min-height: 0; flex: 1 1 auto; }
 .chat-panel > .suggestions, .chat-panel > .composer-wrap { flex: 0 0 auto; }
+.signature-placement-paper { touch-action: none; user-select: none; }
+@media (min-width: 851px) { .workspace > .chat-panel { height: 100%; } }
+@media (max-width: 850px) {
+  .app-shell { overflow: visible; }
+  .workspace { overflow: visible; }
+  .workspace > .chat-panel { min-height: 560px; height: auto; overflow: visible; }
+  .chat-body { min-height: 220px; max-height: 50vh; overflow-y: auto; }
+  .chat-panel > .composer-wrap { position: sticky; bottom: 0; z-index: 4; padding-top: 10px; background: #fffaf8; }
+}

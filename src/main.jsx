@@ -1472,7 +1472,7 @@ function SignatureRequestModal({ busy, error, result, documentName, fileUrl, sen
   const [workflowType, setWorkflowType] = useState('signature')
   const [expiresIn, setExpiresIn] = useState('604800')
   const [placements, setPlacements] = useState({})
-  const [hoverPlacement, setHoverPlacement] = useState(null)
+  const [draftPlacement, setDraftPlacement] = useState(null)
   const [copied, setCopied] = useState(false)
   const [formError, setFormError] = useState('')
   const previewPageCount = Math.max(1, pageCount || 1)
@@ -1503,21 +1503,48 @@ function SignatureRequestModal({ busy, error, result, documentName, fileUrl, sen
     setPlacements((current) => { const nextPlacements = { ...current }; delete nextPlacements[id]; return nextPlacements })
   }
 
-  const placementFromPointer = (event) => {
+  const relativePointer = (event) => {
     const paper = event.currentTarget.getBoundingClientRect()
-    const width = activePlacement.width
-    const height = activePlacement.height
-    const pointerX = Number.isFinite(event.clientX) ? event.clientX : paper.left + paper.width / 2
-    const pointerY = Number.isFinite(event.clientY) ? event.clientY : paper.top + paper.height / 2
-    return { left: Math.min(1 - width - 0.03, Math.max(0.03, (pointerX - paper.left) / paper.width - width / 2)), top: Math.min(1 - height - 0.03, Math.max(0.03, (pointerY - paper.top) / paper.height - height / 2)), width, height }
+    const paperWidth = Math.max(1, paper.width)
+    const paperHeight = Math.max(1, paper.height)
+    const pointerX = Number.isFinite(event.clientX) ? event.clientX : paper.left
+    const pointerY = Number.isFinite(event.clientY) ? event.clientY : paper.top
+    return { left: Math.min(.97, Math.max(.03, (pointerX - paper.left) / paperWidth)), top: Math.min(.97, Math.max(.03, (pointerY - paper.top) / paperHeight)) }
   }
-  const choosePlacement = (event) => {
+  const startPlacement = (event) => {
     if (!activeSigner) return
-    setPlacements((current) => ({ ...current, [activeSigner.id]: { ...activePlacement, ...placementFromPointer(event), placed: true } }))
-    setHoverPlacement(null)
+    event.preventDefault()
+    const point = relativePointer(event)
+    setDraftPlacement({ left: point.left, top: point.top, width: 0, height: 0 })
+    try { event.currentTarget.setPointerCapture?.(event.pointerId) } catch (_error) {}
     setFormError('')
   }
-  const previewPlacement = (event) => { if (activeSigner) setHoverPlacement(placementFromPointer(event)) }
+  const movePlacement = (event) => {
+    if (!draftPlacement) return
+    const point = relativePointer(event)
+    const left = Math.min(draftPlacement.left, point.left)
+    const top = Math.min(draftPlacement.top, point.top)
+    const width = Math.min(Math.abs(point.left - draftPlacement.left), .92 - left)
+    const height = Math.min(Math.abs(point.top - draftPlacement.top), .92 - top)
+    setDraftPlacement((current) => current ? { ...current, left, top, width, height } : current)
+  }
+  const finishPlacement = (event) => {
+    if (!draftPlacement || !activeSigner) return
+    event.preventDefault()
+    const point = relativePointer(event)
+    const left = Math.min(draftPlacement.left, point.left)
+    const top = Math.min(draftPlacement.top, point.top)
+    const width = Math.min(Math.abs(point.left - draftPlacement.left), .92 - left)
+    const height = Math.min(Math.abs(point.top - draftPlacement.top), .92 - top)
+    setDraftPlacement(null)
+    try { if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId) } catch (_error) {}
+    if (width < .08 || height < .05) {
+      setFormError('İmza alanını oluşturmak için PDF üzerinde basılı tutup sürükleyerek bir kutu çiz.')
+      return
+    }
+    setPlacements((current) => ({ ...current, [activeSigner.id]: { ...activePlacement, left, top, width, height, placed: true } }))
+    setFormError('')
+  }
   const selectWorkflow = (value) => {
     setWorkflowType(value)
     if (value === 'review' && signers.length > 1) {
@@ -1563,7 +1590,7 @@ function SignatureRequestModal({ busy, error, result, documentName, fileUrl, sen
               <div className="signature-sender-card"><span>Gönderen hesap</span><strong>{senderName}</strong><small>{senderEmail}</small></div>
               <div className="signer-list-heading"><div><strong>Signer’lar</strong><span>{signers.length}/8 kişi</span></div><button type="button" className="signer-add-button" onClick={addSigner} disabled={workflowType === 'review' || signers.length >= 8}><span>+</span> Add signer</button></div>
               <div className="signer-list">{signers.map((signer, index) => { const selected = activeSigner?.id === signer.id; return <div className={`signer-card ${selected ? 'selected' : ''}`} key={signer.id} onClick={() => setActiveSignerId(signer.id)}><div className="signer-card-top"><button type="button" className="signer-select-button" onClick={() => setActiveSignerId(signer.id)}><span>{index + 1}</span><strong>{signer.name || `Signer ${index + 1}`}</strong></button>{signers.length > 1 && <button type="button" className="signer-remove-button" onClick={(event) => { event.stopPropagation(); removeSigner(signer.id) }} aria-label="Signer’ı kaldır"><X size={13} /></button>}</div><input value={signer.name} onClick={() => setActiveSignerId(signer.id)} onChange={(event) => updateSigner(signer.id, 'name', event.target.value)} required placeholder="Full name" autoComplete="name" /><input type="email" value={signer.email} onClick={() => setActiveSignerId(signer.id)} onChange={(event) => updateSigner(signer.id, 'email', event.target.value)} required placeholder="email@example.com" autoComplete="email" /><small>{selected ? 'Şimdi PDF üzerinde bu signer için alanı seç.' : placements[signer.id]?.placed ? 'İmza alanı yerleştirildi' : 'Alan seçmek için tıkla'}</small></div> })}</div>
-              <div className="signature-placement-field"><div className="signature-placement-heading"><label>{activeSigner ? `${activeSigner.name || `Signer ${activeSignerIndex + 1}`} için imza alanı` : 'İmza alanı'}</label><span>Signer’ı seç, sonra PDF üzerinde tıkla</span></div><div className="signature-placement-paper" onClick={choosePlacement} onMouseMove={previewPlacement} onMouseLeave={() => setHoverPlacement(null)} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') choosePlacement(event) }}><PdfPreview src={fileUrl} page={activePlacement.page} onPageCount={handlePreviewPageCount} />{signers.map((signer, index) => { const placement = getPlacement(signer, index); if (placement.page !== activePlacement.page) return null; return <div className={`signature-placement-marker ${signer.id === activeSigner?.id ? 'active' : ''}`} style={{ left: `${placement.left * 100}%`, top: `${placement.top * 100}%`, width: `${placement.width * 100}%`, height: `${placement.height * 100}%` }} key={signer.id}><PenLine size={11} /><div className="signature-placement-preview"><strong>{signer.name || `Signer ${index + 1}`}</strong><span>İmza</span></div></div> })}{hoverPlacement && activeSigner && <div className="signature-placement-marker ghost" style={{ left: `${hoverPlacement.left * 100}%`, top: `${hoverPlacement.top * 100}%`, width: `${hoverPlacement.width * 100}%`, height: `${hoverPlacement.height * 100}%` }}><PenLine size={11} /><div className="signature-placement-preview"><strong>{activeSigner.name || `Signer ${activeSignerIndex + 1}`}</strong><span>Buraya yerleşir</span></div></div>}<div className="signature-placement-help">{activeSigner?.name || `Signer ${activeSignerIndex + 1}`} için alanı yerleştirmek üzere PDF’e tıkla</div></div><div className="signature-placement-controls"><label>Sayfa<select value={activePlacement.page} onChange={(event) => setPlacements((current) => ({ ...current, [activeSigner.id]: { ...activePlacement, page: Number(event.target.value) } }))}>{Array.from({ length: previewPageCount }, (_item, index) => <option value={index + 1} key={index + 1}>{index + 1}</option>)}</select></label><span>Her signer’ın adı üstte, imza alanı altında ayrı ayrı yazdırılacak.</span></div></div>
+              <div className="signature-placement-field"><div className="signature-placement-heading"><label>{activeSigner ? `${activeSigner.name || `Signer ${activeSignerIndex + 1}`} için imza alanı` : 'İmza alanı'}</label><span>Signer’ı seç, basılı tut ve PDF üzerinde kutu çiz</span></div><div className="signature-placement-paper" onPointerDown={startPlacement} onPointerMove={movePlacement} onPointerUp={finishPlacement} onPointerCancel={finishPlacement} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setFormError('İmza alanını PDF üzerinde basılı tutup sürükleyerek çizmelisin.') }}><PdfPreview src={fileUrl} page={activePlacement.page} onPageCount={handlePreviewPageCount} />{signers.map((signer, index) => { const placement = getPlacement(signer, index); if (!placement.placed || placement.page !== activePlacement.page) return null; return <div className={`signature-placement-marker ${signer.id === activeSigner?.id ? 'active' : ''}`} style={{ left: `${placement.left * 100}%`, top: `${placement.top * 100}%`, width: `${placement.width * 100}%`, height: `${placement.height * 100}%` }} key={signer.id}><PenLine size={11} /><div className="signature-placement-preview"><strong>{signer.name || `Signer ${index + 1}`}</strong><span>İmza</span></div></div> })}{draftPlacement && activeSigner && <div className="signature-placement-marker ghost" style={{ left: `${draftPlacement.left * 100}%`, top: `${draftPlacement.top * 100}%`, width: `${draftPlacement.width * 100}%`, height: `${draftPlacement.height * 100}%` }}><PenLine size={11} /><div className="signature-placement-preview"><strong>{activeSigner.name || `Signer ${activeSignerIndex + 1}`}</strong><span>Çiziliyor...</span></div></div>}<div className="signature-placement-help">{activeSigner?.name || `Signer ${activeSignerIndex + 1}`} için basılı tutup imza kutusu çiz</div></div><div className="signature-placement-controls"><label>Sayfa<select value={activePlacement.page} onChange={(event) => setPlacements((current) => ({ ...current, [activeSigner.id]: { ...activePlacement, page: Number(event.target.value) } }))}>{Array.from({ length: previewPageCount }, (_item, index) => <option value={index + 1} key={index + 1}>{index + 1}</option>)}</select></label><span>Her signer’ın adı üstte, imza alanı altında ayrı ayrı yazdırılacak.</span></div></div>
               <label>Akış türü<select value={workflowType} onChange={(event) => selectWorkflow(event.target.value)}><option value="signature">E-imza akışı</option><option value="review">İnceleme iste</option></select></label>
               <label>Mesaj (opsiyonel)<textarea className="signature-message-input" value={message} onChange={(event) => setMessage(event.target.value)} rows={3} placeholder="Kısa bir not ekle..." /></label>
               <label>Link geçerliliği<select value={expiresIn} onChange={(event) => setExpiresIn(event.target.value)}><option value="86400">24 saat</option><option value="604800">7 gün</option><option value="2592000">30 gün</option></select></label>
