@@ -377,6 +377,13 @@ function App() {
     }
   }
 
+  const cancelSignatureRequest = async (requestId) => {
+    const result = await apiFetch(`/api/signatures/${encodeURIComponent(requestId)}/cancel`, { method: 'POST', headers: authHeaders() })
+    const data = await result.json().catch(() => ({}))
+    if (!result.ok) throw new Error(data.error || 'İmza isteği iptal edilemedi.')
+    setToast({ tone: 'success', text: 'İmza isteği iptal edildi.' })
+  }
+
   const openCloudFiles = async () => {
     if (!session) {
       openAuthPrompt()
@@ -858,7 +865,7 @@ function App() {
       {showComparison && <ComparisonDrawer comparison={comparison} onClose={() => setShowComparison(false)} />}
       {showCloudFiles && <CloudFilesDrawer files={cloudFiles} onClose={() => setShowCloudFiles(false)} onOpen={downloadCloudFile} onDelete={deleteCloudFile} onShare={shareCloudFile} />}
       {showSignatureRequest && <SignatureRequestModal busy={signatureRequestBusy} error={signatureRequestError} result={signatureRequestResult} documentName={file?.name} senderName={session?.user?.user_metadata?.full_name || session?.user?.email} senderEmail={session?.user?.email} pageCount={pageCount} currentPage={currentPage} onClose={() => setShowSignatureRequest(false)} onSubmit={createSignatureRequest} onOpenRequests={() => { setShowSignatureRequest(false); setShowSignatureRequests(true) }} />}
-      {showSignatureRequests && <SignatureRequestsDrawer session={session} authHeaders={authHeaders} onClose={() => setShowSignatureRequests(false)} />}
+      {showSignatureRequests && <SignatureRequestsDrawer session={session} authHeaders={authHeaders} onClose={() => setShowSignatureRequests(false)} onCancel={cancelSignatureRequest} />}
       {showAuth && <AuthModal mode={authMode} busy={authBusy} error={authError} onModeChange={(mode) => { setAuthMode(mode); setAuthError('') }} onClose={() => setShowAuth(false)} onSubmit={handleAuthSubmit} />}
       {showAccount && session && <AccountModal session={session} busy={profileBusy} error={profileError} onClose={() => setShowAccount(false)} onSubmit={handleProfileSave} onOpenPricing={() => { setShowAccount(false); setShowPricing(true) }} />}
       {showAccountNudge && !session && <AccountNudge onClose={() => setShowAccountNudge(false)} onSignup={openAuthPrompt} onPricing={() => setShowPricing(true)} />}
@@ -1057,10 +1064,11 @@ function SignatureRequestModal({ busy, error, result, documentName, senderName, 
   )
 }
 
-function SignatureRequestsDrawer({ session, authHeaders, onClose }) {
+function SignatureRequestsDrawer({ session, authHeaders, onClose, onCancel }) {
   const [requests, setRequests] = useState([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
+  const [cancellingId, setCancellingId] = useState('')
 
   useEffect(() => {
     if (!session) return undefined
@@ -1076,12 +1084,26 @@ function SignatureRequestsDrawer({ session, authHeaders, onClose }) {
     return () => { active = false }
   }, [session])
 
+  const cancelRequest = async (request) => {
+    if (!window.confirm('Bu imza isteğini iptal etmek istediğine emin misin?')) return
+    setCancellingId(request.id)
+    setError('')
+    try {
+      await onCancel(request.id)
+      setRequests((current) => current.map((item) => item.id === request.id ? { ...item, status: 'cancelled' } : item))
+    } catch (cancelError) {
+      setError(cancelError.message || 'İmza isteği iptal edilemedi.')
+    } finally {
+      setCancellingId('')
+    }
+  }
+
   return (
     <aside className="history-drawer signature-requests-drawer">
       <div className="history-heading"><div><span>PDF WORKFLOW</span><h2>İmza talepleri</h2></div><button className="icon-button light" onClick={onClose}><X size={17} /></button></div>
       {error && <div className="auth-error inline-error">{error}</div>}
       {loading ? <div className="history-empty"><LoaderCircle className="spin" size={20} /><p>Talepler yükleniyor...</p></div> : requests.length === 0 ? <div className="history-empty"><PenLine size={20} /><p>Henüz bir imza talebi yok.</p></div> : <div className="signature-request-list">
-        {requests.map((request) => <div className="signature-request-item" key={request.id}><div className="signature-request-main"><strong>{request.document_name}</strong><span>{request.recipient_name || request.recipient_email}</span><small>{request.workflow_type === 'review' ? 'İnceleme' : 'İmza'} · {new Date(request.created_at).toLocaleString()}</small>{request.signedDocumentUrl && <a className="signed-document-link" href={request.signedDocumentUrl} target="_blank" rel="noreferrer">İmzalı PDF’i aç</a>}</div><em className={`request-status ${request.status}`}>{request.status}</em></div>)}
+        {requests.map((request) => <div className="signature-request-item" key={request.id}><div className="signature-request-main"><strong>{request.document_name}</strong><span>{request.recipient_name || request.recipient_email}</span><small>{request.workflow_type === 'review' ? 'İnceleme' : 'İmza'} · {new Date(request.created_at).toLocaleString()}</small>{request.signedDocumentUrl && <a className="signed-document-link" href={request.signedDocumentUrl} target="_blank" rel="noreferrer">İmzalı PDF’i aç</a>}</div><div className="signature-request-actions"><em className={`request-status ${request.status}`}>{request.status}</em>{['pending', 'viewed'].includes(request.status) && <button className="signature-cancel-button" type="button" onClick={() => cancelRequest(request)} disabled={cancellingId === request.id}>{cancellingId === request.id ? <LoaderCircle className="spin" size={12} /> : 'İptal et'}</button>}</div></div>)}
       </div>}
     </aside>
   )
@@ -1200,6 +1222,10 @@ function ReviewPage({ token }) {
   const [loadError, setLoadError] = useState('')
   const [done, setDone] = useState(false)
   const [notifiedEmails, setNotifiedEmails] = useState([])
+  const [resultStatus, setResultStatus] = useState('')
+  const [showDecline, setShowDecline] = useState(false)
+  const [declineReason, setDeclineReason] = useState('')
+  const [declineBusy, setDeclineBusy] = useState(false)
 
   useEffect(() => {
     let active = true
@@ -1209,7 +1235,8 @@ function ReviewPage({ token }) {
         if (!response.ok) throw new Error(data.error || 'İmza bağlantısı açılamadı.')
         if (active) {
           setRequest(data.request)
-          setDone(data.request?.status === 'signed')
+          setDone(['signed', 'declined', 'cancelled', 'expired'].includes(data.request?.status))
+          setResultStatus(data.request?.status || '')
         }
       })
       .catch((requestError) => { if (active) setLoadError(requestError.message) })
@@ -1227,6 +1254,7 @@ function ReviewPage({ token }) {
       const data = await response.json().catch(() => ({}))
       if (!response.ok) throw new Error(data.error || 'İmza kaydedilemedi.')
       setDone(true)
+      setResultStatus('signed')
       setNotifiedEmails(data.notifiedEmails || [])
       setRequest((current) => current ? { ...current, status: 'signed', signedAt: data.signedAt } : current)
     } catch (submitError) {
@@ -1236,10 +1264,29 @@ function ReviewPage({ token }) {
     }
   }
 
+  const submitDecline = async (event) => {
+    event.preventDefault()
+    if (declineBusy) return
+    setDeclineBusy(true)
+    setError('')
+    try {
+      const response = await apiFetch(`/api/signatures/${encodeURIComponent(token)}/decline`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ reason: declineReason.trim() }) })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data.error || 'İmza isteği reddedilemedi.')
+      setDone(true)
+      setResultStatus('declined')
+      setRequest((current) => current ? { ...current, status: 'declined' } : current)
+    } catch (declineError) {
+      setError(declineError.message)
+    } finally {
+      setDeclineBusy(false)
+    }
+  }
+
   return (
     <div className="review-shell">
       <header className="review-header"><div className="brand-lockup"><div className="brand-mark"><Sparkles size={17} strokeWidth={2.5} /></div><span className="brand-name">update<span>MyPDF</span></span></div><span className="review-secure"><Check size={13} /> Güvenli PDF workflow</span></header>
-      {loading ? <div className="review-state"><LoaderCircle className="spin" size={25} /><p>PDF hazırlanıyor...</p></div> : loadError ? <div className="review-state review-error"><X size={25} /><h1>Bağlantı açılamadı</h1><p>{loadError}</p></div> : request && <main className="review-layout"><section className="review-viewer"><div className="review-viewer-heading"><FileText size={16} /><strong>{request.documentName}</strong></div><iframe title="İmzalanacak PDF" src={`${request.signedUrl}#toolbar=0&navpanes=0`} /></section><section className="review-card"><div className="review-card-icon"><PenLine size={19} /></div><span className="review-eyebrow">{request.workflowType === 'review' ? 'PDF inceleme isteği' : 'PDF imza isteği'}</span><h1>{request.workflowType === 'review' ? 'Belgeyi incele ve onayla' : 'Belgeyi imzala'}</h1>{request.recipientName && <p className="review-greeting">Merhaba {request.recipientName},</p>}{request.message && <p className="review-message">{request.message}</p>}<p className="review-expiry">Bu bağlantı {new Date(request.expiresAt).toLocaleString()} tarihine kadar geçerli.</p>{done ? <div className="review-complete"><Check size={20} /><strong>İşlem tamamlandı</strong><p>{notifiedEmails.length >= 2 ? 'İmzalı PDF, belge sahibine ve imzalayan kişiye e-posta ile gönderildi.' : notifiedEmails.length === 1 ? 'İmza kaydedildi ve imzalı PDF e-posta ile gönderildi.' : 'Yanıtın kaydedildi. E-posta gönderimi daha sonra tekrar denenecek.'}</p></div> : <form className="review-form" onSubmit={submitSignature}><label>{request.workflowType === 'review' ? 'Onay adı' : 'İmza metni'}<input value={signatureText} onChange={(event) => setSignatureText(event.target.value)} required maxLength={500} placeholder="Adını ve soyadını yaz" /></label>{request.workflowType !== 'review' && <fieldset className="signature-style-field"><legend>İmza stilini seç</legend><div className="signature-style-grid">{signatureStyles.map((style) => <button type="button" className={`signature-style-option ${signatureStyle === style.id ? 'selected' : ''}`} onClick={() => setSignatureStyle(style.id)} key={style.id}><span className={`signature-style-sample ${style.id}`}>{signatureText || 'Ad Soyad'}</span><small>{style.label}</small><em>{style.description}</em></button>)}</div></fieldset>}{error && <div className="auth-error">{error}</div>}<button className="auth-submit" type="submit" disabled={busy || !signatureText.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {busy ? 'Kaydediliyor...' : request.workflowType === 'review' ? 'İncelemeyi tamamla' : 'PDF’i imzala'}</button></form>}<p className="review-disclaimer">Bu işlem, belge sahibinin gönderdiği PDF üzerinde elektronik onay kaydı oluşturur.</p></section></main>}
+      {loading ? <div className="review-state"><LoaderCircle className="spin" size={25} /><p>PDF hazırlanıyor...</p></div> : loadError ? <div className="review-state review-error"><X size={25} /><h1>Bağlantı açılamadı</h1><p>{loadError}</p></div> : request && <main className="review-layout"><section className="review-viewer"><div className="review-viewer-heading"><FileText size={16} /><strong>{request.documentName}</strong></div><iframe title="İmzalanacak PDF" src={`${request.signedUrl}#toolbar=0&navpanes=0`} /></section><section className="review-card"><div className="review-card-icon"><PenLine size={19} /></div><span className="review-eyebrow">{request.workflowType === 'review' ? 'PDF inceleme isteği' : 'PDF imza isteği'}</span><h1>{request.workflowType === 'review' ? 'Belgeyi incele ve onayla' : 'Belgeyi imzala'}</h1>{request.recipientName && <p className="review-greeting">Merhaba {request.recipientName},</p>}{request.message && <p className="review-message">{request.message}</p>}<p className="review-expiry">Bu bağlantı {new Date(request.expiresAt).toLocaleString()} tarihine kadar geçerli.</p>{done ? <div className={`review-complete ${resultStatus === 'declined' ? 'review-declined' : ''}`}><Check size={20} /><strong>{resultStatus === 'declined' ? 'İstek reddedildi' : 'İşlem tamamlandı'}</strong><p>{resultStatus === 'declined' ? 'Belge sahibine bilgi verildi. Bu bağlantı artık kullanılamaz.' : notifiedEmails.length >= 2 ? 'İmzalı PDF, belge sahibine ve imzalayan kişiye e-posta ile gönderildi.' : notifiedEmails.length === 1 ? 'İmza kaydedildi ve imzalı PDF e-posta ile gönderildi.' : 'Yanıtın kaydedildi. E-posta gönderimi daha sonra tekrar denenecek.'}</p></div> : <form className="review-form" onSubmit={submitSignature}><label>{request.workflowType === 'review' ? 'Onay adı' : 'İmza metni'}<input value={signatureText} onChange={(event) => setSignatureText(event.target.value)} required maxLength={500} placeholder="Adını ve soyadını yaz" /></label>{request.workflowType !== 'review' && <fieldset className="signature-style-field"><legend>İmza stilini seç</legend><div className="signature-style-grid">{signatureStyles.map((style) => <button type="button" className={`signature-style-option ${signatureStyle === style.id ? 'selected' : ''}`} onClick={() => setSignatureStyle(style.id)} key={style.id}><span className={`signature-style-sample ${style.id}`}>{signatureText || 'Ad Soyad'}</span><small>{style.label}</small><em>{style.description}</em></button>)}</div></fieldset>}{error && <div className="auth-error">{error}</div>}<button className="auth-submit" type="submit" disabled={busy || !signatureText.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {busy ? 'Kaydediliyor...' : request.workflowType === 'review' ? 'İncelemeyi tamamla' : 'PDF’i imzala'}</button>{request.workflowType !== 'review' && !showDecline && <button className="review-decline-link" type="button" onClick={() => setShowDecline(true)}>İmzalamak istemiyorum</button>}{showDecline && request.workflowType !== 'review' && <div className="review-decline-box"><label>Reddetme nedeni (opsiyonel)<textarea value={declineReason} onChange={(event) => setDeclineReason(event.target.value)} rows={3} maxLength={1000} placeholder="Kısa bir neden yazabilirsin" /></label><div className="review-decline-actions"><button className="review-decline-cancel" type="button" onClick={() => setShowDecline(false)} disabled={declineBusy}>Vazgeç</button><button className="review-decline-confirm" type="button" onClick={submitDecline} disabled={declineBusy}>{declineBusy ? <LoaderCircle className="spin" size={14} /> : null} İsteği reddet</button></div></div>}</form>}<p className="review-disclaimer">Bu işlem, belge sahibinin gönderdiği PDF üzerinde elektronik onay kaydı oluşturur.</p></section></main>}
     </div>
   )
 }

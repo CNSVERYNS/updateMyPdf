@@ -842,6 +842,72 @@ app.post('/api/signatures/:token/sign', async (request, response) => {
   }
 })
 
+app.post('/api/signatures/:token/decline', async (request, response) => {
+  try {
+    const admin = getSupabaseAdmin()
+    const reason = String(request.body?.reason || '').trim().slice(0, 1000)
+    const { data, error } = await admin.from('signature_requests').select('id,owner_id,recipient_email,recipient_name,document_name,status,expires_at,metadata').eq('token_hash', hashAccessToken(request.params.token)).maybeSingle()
+    if (error) throw error
+    if (!data) return response.status(404).json({ error: 'İmza bağlantısı bulunamadı.' })
+    if (new Date(data.expires_at).getTime() <= Date.now()) return response.status(410).json({ error: 'İmza bağlantısının süresi dolmuş.' })
+    if (['signed', 'declined', 'cancelled'].includes(data.status)) return response.status(409).json({ error: 'Bu istek artık değiştirilemez.' })
+
+    const declinedAt = new Date().toISOString()
+    const metadata = { ...(data.metadata || {}), declinedAt, declineReason: reason || null }
+    const { error: updateError } = await admin.from('signature_requests').update({ status: 'declined', metadata }).eq('id', data.id)
+    if (updateError) throw updateError
+    try {
+      await addAuditEvent(admin, { ownerId: data.owner_id, requestId: data.id, eventType: 'request_declined', actorEmail: data.recipient_email, details: { reason: reason || null, ip: request.ip || null, userAgent: request.headers['user-agent'] || null } })
+    } catch (auditError) {
+      console.error('[signature-decline-audit]', auditError?.message || auditError)
+    }
+
+    const notifiedEmails = []
+    try {
+      const owner = await admin.auth.admin.getUserById(data.owner_id)
+      const ownerEmail = owner.data?.user?.email || ''
+      if (ownerEmail) {
+        await sendResendEmail({
+          to: ownerEmail,
+          subject: `Signature request declined: ${data.document_name}`,
+          replyTo: process.env.EMAIL_FROM,
+          text: `${data.recipient_email} declined the request for ${data.document_name}.${reason ? ` Reason: ${reason}` : ''}`,
+          html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#182238"><p><strong>${escapeHtml(data.recipient_email)}</strong> declined the request for <strong>${escapeHtml(data.document_name)}</strong>.</p>${reason ? `<p>Reason: ${escapeHtml(reason)}</p>` : ''}</div>`,
+        })
+        notifiedEmails.push(ownerEmail)
+      }
+    } catch (notificationError) {
+      console.error('[signature-decline-notification]', notificationError?.message || notificationError)
+    }
+    response.json({ ok: true, status: 'declined', declinedAt, notifiedEmails })
+  } catch (error) {
+    console.error('[signature-decline]', error?.message || error)
+    response.status(signatureRequestError(error) ? 503 : error?.status || 500).json({ error: signatureRequestError(error) ? 'İmza tabloları henüz Supabase içinde oluşturulmamış.' : 'İmza isteği reddedilemedi.' })
+  }
+})
+
+app.post('/api/signatures/:id/cancel', requireAuth, async (request, response) => {
+  try {
+    const { admin, user } = request.supabaseContext
+    const { data, error } = await admin.from('signature_requests').select('id,owner_id,document_name,recipient_email,status').eq('id', request.params.id).eq('owner_id', user.id).maybeSingle()
+    if (error) throw error
+    if (!data) return response.status(404).json({ error: 'İmza isteği bulunamadı.' })
+    if (['signed', 'declined', 'cancelled', 'expired'].includes(data.status)) return response.status(409).json({ error: 'Bu istek artık iptal edilemez.' })
+    const cancelledAt = new Date().toISOString()
+    const { error: updateError } = await admin.from('signature_requests').update({ status: 'cancelled', metadata: { cancelledAt, ...(data.metadata || {}) } }).eq('id', data.id).eq('owner_id', user.id)
+    if (updateError) throw updateError
+    try {
+      await addAuditEvent(admin, { ownerId: user.id, requestId: data.id, eventType: 'request_cancelled', actorEmail: user.email, details: { recipientEmail: data.recipient_email } })
+    } catch (auditError) {
+      console.error('[signature-cancel-audit]', auditError?.message || auditError)
+    }
+    response.json({ ok: true, status: 'cancelled', cancelledAt })
+  } catch (error) {
+    console.error('[signature-cancel]', error?.message || error)
+    response.status(signatureRequestError(error) ? 503 : error?.status || 500).json({ error: signatureRequestError(error) ? 'İmza tabloları henüz Supabase içinde oluşturulmamış.' : 'İmza isteği iptal edilemedi.' })
+  }
+})
+
 app.get('/api/signatures/:id/audit', async (request, response) => {
   try {
     const { admin, user } = await getSupabaseUser(request)
