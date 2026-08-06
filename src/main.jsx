@@ -942,11 +942,11 @@ function App() {
               {isCloudSaving ? <LoaderCircle className="spin" size={17} /> : <CloudUpload size={17} />}
             </button>
             <button className="icon-button cloud-menu-button" title="Cloud hesabından çıkış" onClick={signOut}><LogOut size={17} /></button>
-          </> : <button className="cloud-login-button" onClick={() => { setAuthMode('login'); setShowAuth(true) }}><LogIn size={14} /> Giriş</button>)}
+          </> : <><button className="cloud-login-button" onClick={() => { setAuthMode('login'); setAuthError(''); setShowAuth(true) }}><LogIn size={14} /> Giriş yap</button><button className="account-create-button" onClick={() => { setAuthMode('signup'); setAuthError(''); setShowAuth(true) }}>Hesap oluştur</button></>)}
           <button className="export-button" onClick={downloadCurrentPdf}>
             <Download size={15} /> Export
           </button>
-          <button className="avatar" title="Hesap ayarları" onClick={() => { if (!requireAccount()) return; setProfileError(''); setShowAccount(true) }}>{session?.user?.user_metadata?.full_name?.[0]?.toUpperCase() || session?.user?.email?.[0]?.toUpperCase() || 'C'}</button>
+          {session && <button className="avatar" title="Hesap ayarları" onClick={() => { setProfileError(''); setShowAccount(true) }}>{session.user.user_metadata?.full_name?.[0]?.toUpperCase() || session.user.email?.[0]?.toUpperCase() || 'C'}</button>}
           <input ref={compareInputRef} type="file" accept="application/pdf" hidden onChange={handleCompareFile} />
           <input ref={mergeInputRef} type="file" accept="application/pdf" multiple hidden onChange={handleMergeFiles} />
         </div>
