@@ -1079,6 +1079,62 @@ app.post('/api/billing/checkout', requireAuth, async (request, response) => {
   }
 })
 
+app.post('/api/account/email/request', requireAuth, async (request, response) => {
+  try {
+    const { admin, user } = request.supabaseContext
+    const email = String(request.body?.email || '').trim().toLowerCase()
+    if (!email || !email.includes('@')) return response.status(400).json({ error: 'Geçerli bir e-posta adresi yaz.' })
+    if (email === String(user.email || '').toLowerCase()) return response.status(400).json({ error: 'Yeni e-posta mevcut adresinden farklı olmalı.' })
+    const code = String(100000 + (randomBytes(4).readUInt32BE(0) % 900000))
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString()
+    const metadata = {
+      ...(user.user_metadata || {}),
+      pending_email_change: { email, codeHash: hashAccessToken(`${user.id}:${email}:${code}`), expiresAt },
+    }
+    const { error: metadataError } = await admin.auth.admin.updateUserById(user.id, { user_metadata: metadata })
+    if (metadataError) throw metadataError
+    try {
+      await sendResendEmail({
+        to: email,
+        subject: 'updateMyPDF e-posta doğrulama kodun',
+        replyTo: process.env.EMAIL_FROM,
+        text: `updateMyPDF hesabının e-posta adresini değiştirmek için doğrulama kodun: ${code}\n\nBu kod 10 dakika geçerlidir. Bu isteği sen başlatmadıysan bu e-postayı yok sayabilirsin.`,
+        html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#182238"><p>updateMyPDF hesabının e-posta adresini değiştirmek için doğrulama kodun:</p><p style="font-size:28px;font-weight:700;letter-spacing:7px;color:#d04a32">${code}</p><p>Bu kod 10 dakika geçerlidir. Bu isteği sen başlatmadıysan bu e-postayı yok sayabilirsin.</p></div>`,
+      })
+    } catch (emailError) {
+      await admin.auth.admin.updateUserById(user.id, { user_metadata: { ...(user.user_metadata || {}), pending_email_change: null } }).catch(() => {})
+      throw emailError
+    }
+    response.json({ ok: true, expiresIn: 600 })
+  } catch (error) {
+    console.error('[account-email-request]', error?.message || error)
+    const status = error?.code === 'EMAIL_NOT_CONFIGURED' ? 503 : error?.code === 'EMAIL_PROVIDER_ERROR' ? 502 : error?.status || 500
+    response.status(status).json({ error: status === 503 ? 'E-posta servisi henüz yapılandırılmadı.' : status === 502 ? 'Doğrulama e-postası gönderilemedi.' : 'E-posta doğrulama kodu oluşturulamadı.' })
+  }
+})
+
+app.post('/api/account/email/verify', requireAuth, async (request, response) => {
+  try {
+    const { admin, user } = request.supabaseContext
+    const code = String(request.body?.code || '').replace(/\D/g, '').slice(0, 6)
+    if (code.length !== 6) return response.status(400).json({ error: '6 haneli doğrulama kodunu yaz.' })
+    const freshUserResult = await admin.auth.admin.getUserById(user.id)
+    if (freshUserResult.error || !freshUserResult.data?.user) throw freshUserResult.error || new Error('User not found.')
+    const freshUser = freshUserResult.data.user
+    const pending = freshUser.user_metadata?.pending_email_change
+    if (!pending?.email || !pending?.codeHash || new Date(pending.expiresAt).getTime() <= Date.now()) return response.status(410).json({ error: 'Doğrulama kodunun süresi dolmuş. Yeni kod iste.' })
+    if (hashAccessToken(`${user.id}:${pending.email}:${code}`) !== pending.codeHash) return response.status(400).json({ error: 'Doğrulama kodu hatalı.' })
+    const nextMetadata = { ...(freshUser.user_metadata || {}) }
+    delete nextMetadata.pending_email_change
+    const updated = await admin.auth.admin.updateUserById(user.id, { email: pending.email, email_confirm: true, user_metadata: nextMetadata })
+    if (updated.error) throw updated.error
+    response.json({ ok: true, email: pending.email })
+  } catch (error) {
+    console.error('[account-email-verify]', error?.message || error)
+    response.status(error?.status || 500).json({ error: 'E-posta adresi doğrulanamadı.' })
+  }
+})
+
 app.post('/api/signatures/request', async (request, response) => {
   try {
     const { admin, user } = await getSupabaseUser(request)

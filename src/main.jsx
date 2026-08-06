@@ -381,9 +381,17 @@ function App() {
   }
 
   const requestEmailChange = async (email) => {
-    if (!supabase) throw new Error('Supabase hesabı yapılandırılmadı.')
-    const result = await supabase.auth.updateUser({ email: email.trim(), options: { emailRedirectTo: window.location.origin } })
-    if (result.error) throw result.error
+    const result = await apiFetch('/api/account/email/request', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ email: email.trim() }) })
+    const data = await result.json().catch(() => ({}))
+    if (!result.ok) throw new Error(data.error || 'E-posta doğrulama kodu gönderilemedi.')
+  }
+
+  const confirmEmailChange = async (code) => {
+    const result = await apiFetch('/api/account/email/verify', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ code }) })
+    const data = await result.json().catch(() => ({}))
+    if (!result.ok) throw new Error(data.error || 'E-posta adresi doğrulanamadı.')
+    const currentSession = await supabase?.auth.refreshSession()
+    if (currentSession?.data?.session) setSession(currentSession.data.session)
   }
 
   const openBillingPortal = async () => {
@@ -1062,7 +1070,7 @@ function App() {
       {showSignatureRequest && <SignatureRequestModal busy={signatureRequestBusy} error={signatureRequestError} result={signatureRequestResult} documentName={file?.name} senderName={session?.user?.user_metadata?.full_name || session?.user?.email} senderEmail={session?.user?.email} pageCount={pageCount} currentPage={currentPage} onClose={() => setShowSignatureRequest(false)} onSubmit={createSignatureRequest} onOpenRequests={() => { setShowSignatureRequest(false); setShowSignatureRequests(true) }} />}
       {showSignatureRequests && <SignatureRequestsDrawer session={session} authHeaders={authHeaders} onClose={() => setShowSignatureRequests(false)} onCancel={cancelSignatureRequest} onResend={resendSignatureRequest} />}
       {showAuth && <AuthModal mode={authMode} busy={authBusy} error={authError} onModeChange={(mode) => { setAuthMode(mode); setAuthError('') }} onClose={() => setShowAuth(false)} onSubmit={handleAuthSubmit} />}
-      {showAccount && session && <AccountManagementModal session={session} busy={profileBusy} error={profileError} onClose={() => setShowAccount(false)} onProfileSave={handleProfileSave} onChangeEmail={requestEmailChange} onRequestPasswordCode={requestPasswordVerification} onConfirmPasswordChange={confirmPasswordChange} onOpenPricing={() => { setShowAccount(false); setShowPricing(true) }} onOpenBilling={openBillingPortal} onSignOut={signOut} />}
+      {showAccount && session && <AccountManagementModal session={session} busy={profileBusy} error={profileError} onClose={() => setShowAccount(false)} onProfileSave={handleProfileSave} onChangeEmail={requestEmailChange} onConfirmEmailChange={confirmEmailChange} onRequestPasswordCode={requestPasswordVerification} onConfirmPasswordChange={confirmPasswordChange} onOpenPricing={() => { setShowAccount(false); setShowPricing(true) }} onOpenBilling={openBillingPortal} onSignOut={signOut} />}
       {showAccountNudge && !session && <AccountNudge onClose={() => setShowAccountNudge(false)} onSignup={openAuthPrompt} onPricing={() => setShowPricing(true)} />}
       {showPricing && <PricingModal currentPlan={session?.user?.user_metadata?.plan || 'basic'} onClose={() => setShowPricing(false)} onSelect={async (plan) => { try { await startCheckout(plan) } catch (checkoutError) { setToast({ tone: 'error', text: checkoutError.message || 'Ödeme ekranı açılamadı.' }) } }} />}
       {toast && <ToastNotice notification={toast} onClose={() => setToast(null)} />}
@@ -1465,11 +1473,13 @@ function AccountModal({ session, busy, error, onClose, onSubmit, onOpenPricing }
   )
 }
 
-function AccountManagementModal({ session, busy, error, onClose, onProfileSave, onChangeEmail, onRequestPasswordCode, onConfirmPasswordChange, onOpenPricing, onOpenBilling, onSignOut }) {
+function AccountManagementModal({ session, busy, error, onClose, onProfileSave, onChangeEmail, onConfirmEmailChange, onRequestPasswordCode, onConfirmPasswordChange, onOpenPricing, onOpenBilling, onSignOut }) {
   const [section, setSection] = useState('overview')
   const [fullName, setFullName] = useState(session.user.user_metadata?.full_name || '')
   const [marketingConsent, setMarketingConsent] = useState(Boolean(session.user.user_metadata?.marketing_consent))
   const [newEmail, setNewEmail] = useState('')
+  const [emailCode, setEmailCode] = useState('')
+  const [emailCodeSent, setEmailCodeSent] = useState(false)
   const [newPassword, setNewPassword] = useState('')
   const [passwordConfirmation, setPasswordConfirmation] = useState('')
   const [verificationCode, setVerificationCode] = useState('')
@@ -1521,9 +1531,21 @@ function AccountManagementModal({ session, busy, error, onClose, onProfileSave, 
     }
     setLocalBusy(true)
     try {
-      await onChangeEmail(newEmail.trim())
-      setNewEmail('')
-      setNotice('Yeni e-posta adresine doğrulama bağlantısı gönderildi. Değişiklik, bağlantıyı onayladığında tamamlanacak.')
+      if (!emailCodeSent) {
+        await onChangeEmail(newEmail.trim())
+        setEmailCodeSent(true)
+        setNotice('6 haneli doğrulama kodu yeni e-posta adresine gönderildi.')
+      } else {
+        if (emailCode.length !== 6) {
+          setLocalError('6 haneli doğrulama kodunu yaz.')
+          return
+        }
+        await onConfirmEmailChange(emailCode)
+        setNewEmail('')
+        setEmailCode('')
+        setEmailCodeSent(false)
+        setNotice('E-posta adresin güvenli şekilde güncellendi.')
+      }
     } catch (changeError) {
       setLocalError(changeError.message || 'E-posta adresi güncellenemedi.')
     } finally {
@@ -1612,7 +1634,7 @@ function AccountManagementModal({ session, busy, error, onClose, onProfileSave, 
         <label>Ad soyad<input value={fullName} onChange={(event) => setFullName(event.target.value)} required autoComplete="name" /></label>
         <label>Hesap e-postası<input value={session.user.email || ''} readOnly disabled /></label>
       </div>
-      <div className="account-info-panel"><Mail size={16} /><div><strong>E-posta adresini değiştirmek mi istiyorsun?</strong><span>Güvenlik nedeniyle yeni adrese doğrulama bağlantısı gönderilir.</span></div><button type="button" className="account-card-link" onClick={() => setSection('security')}>Güvenliğe git</button></div>
+      <div className="account-info-panel"><Mail size={16} /><div><strong>E-posta adresini değiştirmek mi istiyorsun?</strong><span>Yeni adrese tek kullanımlık doğrulama kodu gönderilir.</span></div><button type="button" className="account-card-link" onClick={() => setSection('security')}>Güvenliğe git</button></div>
       <label className="auth-checkbox"><input type="checkbox" checked={marketingConsent} onChange={(event) => setMarketingConsent(event.target.checked)} /><span>Ürün güncellemeleri, yeni özellikler ve fırsatlar hakkında e-posta almak istiyorum.</span></label>
       {error && <div className="auth-error">{error}</div>}
       {notice && <div className="account-success"><Check size={14} /> {notice}</div>}
@@ -1624,7 +1646,7 @@ function AccountManagementModal({ session, busy, error, onClose, onProfileSave, 
     <div className="account-security-stack">
       <section className="account-panel-card">
         <div className="account-panel-heading"><div className="account-card-icon"><Mail size={17} /></div><div><h3>E-posta adresi</h3><p>Mevcut adresin: <strong>{session.user.email}</strong></p></div></div>
-        <form className="account-form" onSubmit={submitEmail}><label>Yeni e-posta adresi<input type="email" value={newEmail} onChange={(event) => setNewEmail(event.target.value)} placeholder="yeni-adres@example.com" autoComplete="email" /></label><button className="account-outline-button" type="submit" disabled={localBusy}>Doğrulama bağlantısı gönder</button></form>
+        <form className="account-form" onSubmit={submitEmail}><label>Yeni e-posta adresi<input type="email" value={newEmail} onChange={(event) => setNewEmail(event.target.value)} placeholder="yeni-adres@example.com" autoComplete="email" disabled={emailCodeSent} /></label>{emailCodeSent && <label>Doğrulama kodu<input value={emailCode} onChange={(event) => setEmailCode(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" placeholder="6 haneli kod" autoComplete="one-time-code" /></label>}<button className="account-outline-button" type="submit" disabled={localBusy}>{emailCodeSent ? 'E-posta adresini doğrula' : 'Doğrulama kodu gönder'}</button></form>
       </section>
       <section className="account-panel-card">
         <div className="account-panel-heading"><div className="account-card-icon"><KeyRound size={17} /></div><div><h3>Şifre değiştir</h3><p>İşleme başlamadan önce kayıtlı e-posta adresine tek kullanımlık kod gönderilir.</p></div></div>
