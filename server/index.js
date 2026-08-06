@@ -18,6 +18,7 @@ import { getEmailStatus, sendResendEmail } from './email.js'
 import { comparePdfBuffers, extractTextPages } from './pdf-text.js'
 import { ocrPdfBuffer, renderPdfPages } from './pdf-render.js'
 import { getExternalToolStatus, getGhostscriptResources, runExternalTool, withTempDirectory } from './external-tools.js'
+import { detectGoogleTargetLanguage, isGoogleDocumentTranslationConfigured, translatePdfWithGoogle } from './google-translate.js'
 
 const app = express()
 app.set('trust proxy', true)
@@ -1064,6 +1065,7 @@ app.get('/api/health', (_request, response) => {
     supabaseConfigured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
     emailConfigured: getEmailStatus().configured,
     stripeConfigured: Boolean(process.env.STRIPE_SECRET_KEY),
+    googleDocumentTranslationConfigured: isGoogleDocumentTranslationConfigured(),
     emailFrom: getEmailStatus().from,
     tools: getExternalToolStatus(),
   })
@@ -1814,15 +1816,18 @@ const pruneAiCommandJobs = () => {
 
 const formatAiCommandError = (error) => {
   console.error('[ai-command]', error?.message || error)
-  const timedOut = error?.name === 'APIConnectionTimeoutError' || error?.name === 'AbortError' || error?.code === 'ETIMEDOUT'
   const rootError = error?.cause || error
+  const timedOut = [error, rootError].some((item) => item?.name === 'APIConnectionTimeoutError' || item?.name === 'AbortError' || item?.code === 'ETIMEDOUT')
+  const googleError = error?.provider === 'google-document-translation' || rootError?.provider === 'google-document-translation'
   const rawStatus = Number(rootError?.status || rootError?.statusCode || rootError?.response?.status || error?.status || 0)
   const rateLimited = rawStatus === 429 || rootError?.code === 'rate_limit_exceeded' || /rate.?limit|too many requests/i.test(String(rootError?.message || ''))
   const status = rawStatus >= 400 && rawStatus < 600 ? rawStatus : timedOut ? 504 : 500
   const pageMatch = String(error?.message || '').match(/page\s+(\d+)/i)
   const pageSuffix = pageMatch ? ` (sayfa ${pageMatch[1]})` : ''
-  const userError = status === 401
-    ? 'OpenAI API anahtar\u0131 ge\u00e7ersiz veya yetkisiz.'
+  const userError = googleError
+    ? `Google Document Translation: ${error?.message || rootError?.message || 'PDF \u00e7evirisi tamamlanamad\u0131.'}`
+    : status === 401
+      ? 'OpenAI API anahtar\u0131 ge\u00e7ersiz veya yetkisiz.'
     : status === 402
       ? String(rootError?.message || 'AI token bakiyesi yetersiz.')
       : rateLimited
@@ -1932,6 +1937,8 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
   const translationKeywords = ['\u00e7evir', '\u00e7eviri', 'translate', 'translation', 'traduc', 'traduce', 'traduis', 'traduire', 'traduz', 'tradurre', '\u00fcbersetz', '\u043f\u0435\u0440\u0435\u0432', '\u043f\u0440\u0435\u0432\u043e\u0434', '\u7ffb\u8bd1', '\u7ffb\u8a33', '\ubc88\uc5ed', '\u062a\u0631\u062c\u0645', '\u0905\u0928\u0941\u0935\u093e\u0926', '\u03bc\u03b5\u03c4\u03ac\u03c6\u03c1\u03b1\u03c3', '\u05ea\u05e8\u05d2\u05dd', 't\u0142umacz', 'p\u0159elo\u017e', 'vertal', '\u00f6vers\u00e4tt', 'k\u00e4\u00e4nn', 'terjemah', 'd\u1ecbch', 'ingilizce', '\u0131ngilizce', 'english', 'ispanyolca', 'spanish', 'espa\u00f1ol']
   const translationMode = translationKeywords.some((keyword) => prompt.toLocaleLowerCase().includes(keyword))
   const targetLanguageHint = /(?:ingilizce|\u0131ngilizce|english)/i.test(prompt) ? 'English' : /(?:t\u00fcrk\u00e7e|turkish|turkce)/i.test(prompt) ? 'Turkish' : /(?:ispanyolca|spanish|espa\u00f1ol)/i.test(prompt) ? 'Spanish' : 'the language explicitly requested by the user'
+  const googleTargetLanguageCode = detectGoogleTargetLanguage(prompt)
+  const useGoogleDocumentTranslation = translationMode && isGoogleDocumentTranslationConfigured() && Boolean(googleTargetLanguageCode)
   let preExtractedTranslationPages = null
   let preExtractedTranslationText = ''
   let preExtractedTranslationPageCount = 0
@@ -1946,17 +1953,23 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
         .slice(0, 120000)
     } catch (error) {
       console.error('[translation-extraction]', error?.message || error)
-      return response.status(422).json({ error: 'PDF metin katman\u0131 okunamad\u0131. Bu dosyada aranabilir metin bulundu\u011fundan emin ol.' })
+      if (!useGoogleDocumentTranslation) return response.status(422).json({ error: 'PDF metin katman\u0131 okunamad\u0131. Bu dosyada aranabilir metin bulundu\u011fundan emin ol.' })
     }
   }
-  if (translationMode && preExtractedTranslationPageCount > 30) {
+  const googleNativePdfOnly = process.env.GOOGLE_TRANSLATE_NATIVE_PDF_ONLY
+    ? process.env.GOOGLE_TRANSLATE_NATIVE_PDF_ONLY !== 'false'
+    : Boolean(preExtractedTranslationPages?.length)
+  const googleMaxPages = googleNativePdfOnly ? 300 : 20
+  if (translationMode && ((!useGoogleDocumentTranslation && preExtractedTranslationPageCount > 30) || (useGoogleDocumentTranslation && preExtractedTranslationPageCount > googleMaxPages))) {
     return response.status(413).json({
-      error: 'PDF \u00e7evirisi tek istekte en fazla 30 sayfay\u0131 destekliyor. L\u00fctfen dosyay\u0131 30 sayfal\u0131k par\u00e7alara b\u00f6l\u00fcp tekrar dene.',
-      maxPages: 30,
+      error: useGoogleDocumentTranslation
+        ? `Google PDF çevirisi bu dosya türünde en fazla ${googleMaxPages} sayfayı destekliyor.`
+        : 'PDF \u00e7evirisi tek istekte en fazla 30 sayfay\u0131 destekliyor. L\u00fctfen dosyay\u0131 30 sayfal\u0131k parçalara bölüp tekrar dene.',
+      maxPages: useGoogleDocumentTranslation ? googleMaxPages : 30,
       pageCount: preExtractedTranslationPageCount,
     })
   }
-  const largeTranslation = translationMode && (preExtractedTranslationPages?.length > 12 || preExtractedTranslationText.length >= 90000)
+  const largeTranslation = translationMode && (useGoogleDocumentTranslation || preExtractedTranslationPages?.length > 12 || preExtractedTranslationText.length >= 90000)
 
   let tokenContext = null
   try {
@@ -1967,6 +1980,35 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
 
   let reportAiCommandProgress = () => {}
   const executeAiCommand = async () => {
+    if (useGoogleDocumentTranslation) {
+      const totalPages = preExtractedTranslationPageCount || preExtractedTranslationPages?.length || 0
+      reportAiCommandProgress({ phase: 'translation', completedPages: 0, totalPages, percent: 5 })
+      const translated = await translatePdfWithGoogle({
+        pdfBytes: sourceFile.buffer,
+        targetLanguageCode: googleTargetLanguageCode,
+        nativePdfOnly: googleNativePdfOnly,
+      })
+      reportAiCommandProgress({ phase: 'translation', completedPages: totalPages, totalPages, percent: 90 })
+      const tokenUsage = await consumeAiTokens(tokenContext)
+      reportAiCommandProgress({ phase: 'complete', completedPages: totalPages, totalPages, percent: 100 })
+      return {
+        assistantMessage: `Belgenin tamamı ${targetLanguageHint} diline çevrildi; özgün PDF düzeni Google Document Translation ile korundu.`,
+        summary: 'Belge çevirisi Google Document Translation ile uygulandı.',
+        actions: [{ type: 'translate', page: null, text: 'complete PDF', replacement: `Translated to ${targetLanguageHint}` }],
+        editedPdf: translated.pdfBytes.toString('base64'),
+        appliedActions: [{ type: 'translate', applied: true, pageCount: totalPages, provider: 'google-document-translation', detectedLanguageCode: translated.detectedLanguageCode }],
+        warnings: [],
+        analysis: [],
+        officeExports: [],
+        imageExports: [],
+        extractedText: null,
+        audioOverview: null,
+        ocrPages: null,
+        model: 'google-document-translation',
+        sourceFile: sourceFile.originalname || 'document.pdf',
+        tokenUsage,
+      }
+    }
     const client = getClient()
     const extractedTranslationText = preExtractedTranslationText
     const extractedTranslationPages = preExtractedTranslationPages || []

@@ -1073,9 +1073,13 @@ function App() {
       if (!session) recordGuestPrompt()
     } catch (error) {
       setAiStatus('error')
+      const isNetworkError = error instanceof TypeError && /fetch|network|failed/i.test(String(error.message || ''))
+      const visibleError = isNetworkError
+        ? 'PDF çeviri sunucusuna ulaşılamadı. Lütfen birkaç saniye sonra tekrar dene; sorun devam ederse backend bağlantısını kontrol etmeliyiz.'
+        : error.message || 'AI bağlantısı kurulamadı.'
       setMessages((current) => [
         ...current,
-        { id: Date.now() + 1, role: 'assistant', text: error.message || 'AI bağlantısı kurulamadı.' },
+        { id: Date.now() + 1, role: 'assistant', text: visibleError },
       ])
     } finally {
       setIsThinking(false)

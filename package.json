@@ -20,6 +20,7 @@
     "dotenv": "latest",
     "exceljs": "^4.4.0",
     "express": "latest",
+    "google-auth-library": "^11.0.0",
     "lucide-react": "latest",
     "multer": "latest",
     "openai": "latest",

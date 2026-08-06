@@ -11,6 +11,14 @@ services:
         sync: false
       - key: OPENAI_MODEL
         value: gpt-5.6-luna
+      - key: GOOGLE_TRANSLATE_PROJECT_ID
+        sync: false
+      - key: GOOGLE_TRANSLATE_LOCATION
+        value: us-central1
+      - key: GOOGLE_TRANSLATE_NATIVE_PDF_ONLY
+        value: "true"
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON
+        sync: false
       - key: SUPABASE_URL
         sync: false
       - key: SUPABASE_ANON_KEY
