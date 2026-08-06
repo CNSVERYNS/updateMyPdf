@@ -840,7 +840,7 @@ function App() {
       {showAuth && <AuthModal mode={authMode} busy={authBusy} error={authError} onModeChange={(mode) => { setAuthMode(mode); setAuthError('') }} onClose={() => setShowAuth(false)} onSubmit={handleAuthSubmit} />}
       {showAccount && session && <AccountModal session={session} busy={profileBusy} error={profileError} onClose={() => setShowAccount(false)} onSubmit={handleProfileSave} onOpenPricing={() => { setShowAccount(false); setShowPricing(true) }} />}
       {showAccountNudge && !session && <AccountNudge onClose={() => setShowAccountNudge(false)} onSignup={openAuthPrompt} onPricing={() => setShowPricing(true)} />}
-      {showPricing && <PricingModal currentPlan={session?.user?.user_metadata?.plan || 'basic'} onClose={() => setShowPricing(false)} onSelect={() => { setShowPricing(false); openAuthPrompt() }} />}
+      {showPricing && <PricingModal currentPlan={session?.user?.user_metadata?.plan || 'basic'} onClose={() => setShowPricing(false)} onSelect={() => { setShowPricing(false); if (session) setToast({ tone: 'success', text: 'Stripe ödeme bağlantısı bir sonraki adımda aktifleşecek.' }); else openAuthPrompt() }} />}
       {toast && <ToastNotice notification={toast} onClose={() => setToast(null)} />}
     </div>
   )
