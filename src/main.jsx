@@ -53,6 +53,31 @@ const initialMessages = [
   },
 ]
 
+const pricingPlans = [
+  {
+    id: 'basic',
+    name: 'Basic',
+    price: '9.99',
+    description: 'PDF düzenlemeye yeni başlayanlar için.',
+    features: ['100 AI kredisi / ay', '50 sayfaya kadar PDF', '1 GB güvenli cloud', 'Standart işlem kuyruğu'],
+  },
+  {
+    id: 'pro',
+    name: 'Pro',
+    price: '24.99',
+    description: 'Düzenli PDF kullanan profesyoneller için.',
+    features: ['500 AI kredisi / ay', '250 sayfaya kadar PDF', '10 GB güvenli cloud', 'Öncelikli işlem kuyruğu'],
+    featured: true,
+  },
+  {
+    id: 'ultimate',
+    name: 'Ultimate',
+    price: '59.99',
+    description: 'Yoğun belge ve ekip iş akışları için.',
+    features: ['2.000 AI kredisi / ay', '1.000 sayfaya kadar PDF', '50 GB güvenli cloud', 'En yüksek işlem önceliği'],
+  },
+]
+
 const decodePdfFile = (base64, filename) => {
   const binary = window.atob(base64)
   const bytes = new Uint8Array(binary.length)
@@ -100,6 +125,9 @@ function App() {
   const [authMode, setAuthMode] = useState('login')
   const [authBusy, setAuthBusy] = useState(false)
   const [authError, setAuthError] = useState('')
+  const [showPricing, setShowPricing] = useState(false)
+  const [showAccountNudge, setShowAccountNudge] = useState(false)
+  const [guestPromptCount, setGuestPromptCount] = useState(0)
   const [showAccount, setShowAccount] = useState(false)
   const [profileBusy, setProfileBusy] = useState(false)
   const [profileError, setProfileError] = useState('')
@@ -154,6 +182,14 @@ function App() {
   }, [])
 
   useEffect(() => {
+    try {
+      setGuestPromptCount(Number(window.sessionStorage.getItem('pdfmaniac_guest_prompt_count') || 0))
+    } catch {
+      setGuestPromptCount(0)
+    }
+  }, [])
+
+  useEffect(() => {
     if (!toast) return undefined
     const timeout = window.setTimeout(() => setToast(null), 5200)
     return () => window.clearTimeout(timeout)
@@ -181,13 +217,24 @@ function App() {
     return false
   }
 
+  const recordGuestPrompt = () => {
+    if (session) return
+    setGuestPromptCount(1)
+    try {
+      window.sessionStorage.setItem('pdfmaniac_guest_prompt_count', '1')
+    } catch {
+      // Session storage can be unavailable in private browsing modes.
+    }
+    setShowAccountNudge(true)
+  }
+
   const handleAuthSubmit = async ({ email, password, fullName, marketingOptIn }) => {
     if (!supabase) return
     setAuthBusy(true)
     setAuthError('')
     try {
       const result = authMode === 'signup'
-        ? await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName?.trim() || email, marketing_consent: Boolean(marketingOptIn), marketing_consent_at: marketingOptIn ? new Date().toISOString() : null }, emailRedirectTo: window.location.origin } })
+        ? await supabase.auth.signUp({ email, password, options: { data: { full_name: fullName?.trim() || email, plan: 'basic', marketing_consent: Boolean(marketingOptIn), marketing_consent_at: marketingOptIn ? new Date().toISOString() : null }, emailRedirectTo: window.location.origin } })
         : await supabase.auth.signInWithPassword({ email, password })
       if (result.error) throw result.error
       if (authMode === 'signup' && !result.data.session) {
@@ -362,7 +409,6 @@ function App() {
   }, [currentPage, pageCount])
 
   const setPdf = (selectedFile) => {
-    if (!requireAccount()) return
     if (!selectedFile || selectedFile.type !== 'application/pdf') return
     if (fileUrl) URL.revokeObjectURL(fileUrl)
     setFile(selectedFile)
@@ -394,10 +440,6 @@ function App() {
   }
 
   const handleImageChange = (event) => {
-    if (!requireAccount()) {
-      event.target.value = ''
-      return
-    }
     const selectedImage = event.target.files?.[0]
     event.target.value = ''
     if (!selectedImage || !['image/png', 'image/jpeg'].includes(selectedImage.type)) return
@@ -406,10 +448,6 @@ function App() {
   }
 
   const handleCompareFile = async (event) => {
-    if (!requireAccount()) {
-      event.target.value = ''
-      return
-    }
     const secondFile = event.target.files?.[0]
     event.target.value = ''
     if (!secondFile || secondFile.type !== 'application/pdf') return
@@ -436,10 +474,6 @@ function App() {
   }
 
   const handleMergeFiles = async (event) => {
-    if (!requireAccount()) {
-      event.target.value = ''
-      return
-    }
     const selectedFiles = Array.from(event.target.files || []).filter((item) => item.type === 'application/pdf')
     event.target.value = ''
     if (!file) {
@@ -513,7 +547,10 @@ function App() {
   const submitPrompt = async (prompt = input) => {
     const cleanPrompt = prompt.trim()
     if (!cleanPrompt || isThinking) return
-    if (!requireAccount()) return
+    if (!session && guestPromptCount >= 1) {
+      setShowAccountNudge(true)
+      return
+    }
     const nextUserMessage = { id: Date.now(), role: 'user', text: cleanPrompt }
     setMessages((current) => [...current, nextUserMessage])
     setInput('')
@@ -592,6 +629,7 @@ function App() {
         { id: Date.now() + 1, role: 'assistant', text: responseText },
       ])
       setAiStatus('live')
+      if (!session) recordGuestPrompt()
     } catch (error) {
       setAiStatus('error')
       setMessages((current) => [
@@ -604,7 +642,6 @@ function App() {
   }
 
   const resetChanges = () => {
-    if (!requireAccount()) return
     if (fileUrl && originalFile && file !== originalFile) URL.revokeObjectURL(fileUrl)
     if (originalFile && file !== originalFile) {
       setFile(originalFile)
@@ -653,19 +690,19 @@ function App() {
         </div>
 
         <div className="top-actions">
-          <button className="icon-button" title="Geçmişi göster" onClick={() => { if (requireAccount()) setShowHistory((value) => !value) }}>
+          <button className="icon-button" title="Geçmişi göster" onClick={() => setShowHistory((value) => !value)}>
             <History size={17} />
           </button>
           <button className="icon-button" title="Yetenekleri göster" onClick={() => setShowCapabilities((value) => !value)}>
             <ListChecks size={17} />
           </button>
-          <button className="icon-button" title="İki PDF’i karşılaştır" onClick={() => { if (requireAccount()) compareInputRef.current?.click() }}>
+          <button className="icon-button" title="İki PDF’i karşılaştır" onClick={() => compareInputRef.current?.click()}>
             {isComparing ? <LoaderCircle className="spin" size={17} /> : <GitCompareArrows size={17} />}
           </button>
-          <button className="icon-button" title="PDF’leri birleştir" onClick={() => { if (requireAccount()) mergeInputRef.current?.click() }}>
+          <button className="icon-button" title="PDF’leri birleştir" onClick={() => mergeInputRef.current?.click()}>
             {isMerging ? <LoaderCircle className="spin" size={17} /> : <FilePlus2 size={17} />}
           </button>
-          <button className="icon-button" title="More options"><MoreHorizontal size={18} /></button>
+          <button className="icon-button" title="Planları gör" onClick={() => setShowPricing(true)}><MoreHorizontal size={18} /></button>
           <button className="icon-button" title="İmza taleplerini takip et" onClick={() => { if (!session) openAuthPrompt(); else setShowSignatureRequests(true) }}><Check size={17} /></button>
           <button className="icon-button" title="İmza veya inceleme talebi oluştur" onClick={openSignatureRequest}><PenLine size={17} /></button>
           {supabaseConfigured && (session ? <>
@@ -707,7 +744,7 @@ function App() {
             className={`viewer-stage ${isDragging ? 'dragging' : ''}`}
             onDragOver={(event) => { event.preventDefault(); setIsDragging(true) }}
             onDragLeave={() => setIsDragging(false)}
-            onDrop={(event) => { event.preventDefault(); setIsDragging(false); if (requireAccount()) setPdf(event.dataTransfer.files?.[0]) }}
+            onDrop={(event) => { event.preventDefault(); setIsDragging(false); setPdf(event.dataTransfer.files?.[0]) }}
           >
             {fileUrl ? (
               <div className="uploaded-pdf" style={previewScale}>
@@ -719,7 +756,7 @@ function App() {
                   <div className="upload-icon"><Upload size={22} /></div>
                   <h2>PDF’ini buraya bırak</h2>
                   <p>veya cihazından bir dosya seçerek başla</p>
-                  <button className="choose-file-button" onClick={() => { if (requireAccount()) fileInputRef.current?.click() }}>
+                  <button className="choose-file-button" onClick={() => fileInputRef.current?.click()}>
                     <FilePlus2 size={16} /> PDF seç
                   </button>
                   <span className="drop-hint">PDF dosyaları · Maks. 50 MB</span>
@@ -745,7 +782,7 @@ function App() {
               <div className="ai-avatar"><Sparkles size={16} /></div>
               <div><h1>AI assistant</h1><p><span className={`online-dot ${aiStatus === 'error' ? 'error' : ''}`} /> {aiStatus === 'live' ? 'Live AI connected' : aiStatus === 'error' ? 'Connection issue' : 'Ready to edit'}</p></div>
             </div>
-            <button className="icon-button light" title="Sohbeti temizle" onClick={() => { if (requireAccount()) setMessages(initialMessages) }}><Trash2 size={16} /></button>
+            <button className="icon-button light" title="Sohbeti temizle" onClick={() => setMessages(initialMessages)}><Trash2 size={16} /></button>
           </div>
 
           <div className="chat-body">
@@ -786,7 +823,7 @@ function App() {
               </button>
             </div>
             <div className="composer-meta">
-              <button className="attach-image-button" type="button" onClick={() => { if (requireAccount()) imageInputRef.current?.click() }}><ImagePlus size={12} /> {imageFile ? 'Görsel hazır' : 'Görsel ekle'}</button>
+              <button className="attach-image-button" type="button" onClick={() => imageInputRef.current?.click()}><ImagePlus size={12} /> {imageFile ? 'Görsel hazır' : 'Görsel ekle'}</button>
               <span><MessageSquareText size={12} /> Enter to send</span><span>AI can make mistakes</span>
             </div>
             <input ref={imageInputRef} type="file" accept="image/png,image/jpeg" hidden onChange={handleImageChange} />
@@ -801,7 +838,9 @@ function App() {
       {showSignatureRequest && <SignatureRequestModal busy={signatureRequestBusy} error={signatureRequestError} result={signatureRequestResult} documentName={file?.name} senderName={session?.user?.user_metadata?.full_name || session?.user?.email} senderEmail={session?.user?.email} pageCount={pageCount} currentPage={currentPage} onClose={() => setShowSignatureRequest(false)} onSubmit={createSignatureRequest} onOpenRequests={() => { setShowSignatureRequest(false); setShowSignatureRequests(true) }} />}
       {showSignatureRequests && <SignatureRequestsDrawer session={session} authHeaders={authHeaders} onClose={() => setShowSignatureRequests(false)} />}
       {showAuth && <AuthModal mode={authMode} busy={authBusy} error={authError} onModeChange={(mode) => { setAuthMode(mode); setAuthError('') }} onClose={() => setShowAuth(false)} onSubmit={handleAuthSubmit} />}
-      {showAccount && session && <AccountModal session={session} busy={profileBusy} error={profileError} onClose={() => setShowAccount(false)} onSubmit={handleProfileSave} />}
+      {showAccount && session && <AccountModal session={session} busy={profileBusy} error={profileError} onClose={() => setShowAccount(false)} onSubmit={handleProfileSave} onOpenPricing={() => { setShowAccount(false); setShowPricing(true) }} />}
+      {showAccountNudge && !session && <AccountNudge onClose={() => setShowAccountNudge(false)} onSignup={openAuthPrompt} onPricing={() => setShowPricing(true)} />}
+      {showPricing && <PricingModal currentPlan={session?.user?.user_metadata?.plan || 'basic'} onClose={() => setShowPricing(false)} onSelect={() => { setShowPricing(false); openAuthPrompt() }} />}
       {toast && <ToastNotice notification={toast} onClose={() => setToast(null)} />}
     </div>
   )
@@ -1026,7 +1065,7 @@ function SignatureRequestsDrawer({ session, authHeaders, onClose }) {
   )
 }
 
-function AccountModal({ session, busy, error, onClose, onSubmit }) {
+function AccountModal({ session, busy, error, onClose, onSubmit, onOpenPricing }) {
   const [fullName, setFullName] = useState(session.user.user_metadata?.full_name || '')
   const [password, setPassword] = useState('')
   const [marketingConsent, setMarketingConsent] = useState(Boolean(session.user.user_metadata?.marketing_consent))
@@ -1041,6 +1080,7 @@ function AccountModal({ session, busy, error, onClose, onSubmit }) {
       <div className="auth-modal account-modal">
         <div className="auth-modal-heading"><div><span>PDF MANIAC CLOUD</span><h2>Hesap bilgileri</h2></div><button className="icon-button light" onClick={onClose} disabled={busy}><X size={17} /></button></div>
         <p className="auth-description">Gönderdiğin imza taleplerinde bu ad ve kayıtlı e-posta otomatik gönderen bilgisi olarak kullanılır.</p>
+        <div className="account-plan-card"><div><span>Mevcut plan</span><strong>{(session.user.user_metadata?.plan || 'basic').toUpperCase()}</strong></div><button type="button" onClick={onOpenPricing}>Planları gör</button></div>
         <form onSubmit={submit}>
           <label>Ad soyad<input value={fullName} onChange={(event) => setFullName(event.target.value)} required autoComplete="name" /></label>
           <label>Kayıtlı e-posta<input value={session.user.email || ''} readOnly disabled /></label>
@@ -1079,6 +1119,40 @@ function AuthModal({ mode, busy, error, onModeChange, onClose, onSubmit }) {
           <button className="auth-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <LogIn size={16} />} {mode === 'login' ? 'Giriş yap' : 'Kayıt ol'}</button>
         </form>
         <button className="auth-switch" onClick={() => onModeChange(mode === 'login' ? 'signup' : 'login')}>{mode === 'login' ? 'Hesabın yok mu? Kayıt ol' : 'Zaten hesabın var mı? Giriş yap'}</button>
+      </div>
+    </div>
+  )
+}
+
+function AccountNudge({ onClose, onSignup, onPricing }) {
+  return (
+    <aside className="account-nudge" role="status">
+      <div className="account-nudge-icon"><Sparkles size={15} /></div>
+      <div className="account-nudge-copy"><strong>İlk AI önizlemen hazır</strong><span>Devam etmek ve dosyanı kaydetmek için ücretsiz hesap oluştur.</span></div>
+      <button type="button" className="account-nudge-primary" onClick={onSignup}>Hesap oluştur</button>
+      <button type="button" className="account-nudge-secondary" onClick={onPricing}>Planlar</button>
+      <button type="button" className="toast-close" onClick={onClose} aria-label="Bildirimi kapat"><X size={14} /></button>
+    </aside>
+  )
+}
+
+function PricingModal({ currentPlan, onClose, onSelect }) {
+  return (
+    <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <div className="pricing-modal">
+        <div className="auth-modal-heading"><div><span>PDF MANIAC PLANS</span><h2>İhtiyacına uygun planı seç</h2></div><button className="icon-button light" onClick={onClose}><X size={17} /></button></div>
+        <p className="auth-description">Planlar AI kullanım kredisi ve cloud kapasitesine göre hazırlanmıştır. Stripe ödeme bağlantısı bir sonraki adımda aktifleşecek.</p>
+        <div className="pricing-grid">
+          {pricingPlans.map((plan) => <article className={`pricing-card ${plan.featured ? 'featured' : ''}`} key={plan.id}>
+            {plan.featured && <span className="pricing-popular">EN POPÜLER</span>}
+            <div className="pricing-card-heading"><h3>{plan.name}</h3>{currentPlan === plan.id && <span className="pricing-current">MEVCUT</span>}</div>
+            <p>{plan.description}</p>
+            <div className="pricing-price"><strong>${plan.price}</strong><span>/ ay</span></div>
+            <ul>{plan.features.map((feature) => <li key={feature}><Check size={13} /> {feature}</li>)}</ul>
+            <button type="button" className={plan.featured ? 'auth-submit pricing-cta' : 'auth-switch pricing-cta'} onClick={onSelect}>{currentPlan === plan.id ? 'Planı yönet' : `${plan.name} planını seç`}</button>
+          </article>)}
+        </div>
+        <p className="pricing-footnote">AI kredileri belge uzunluğu ve kullanılan modele göre hesaplanır. Kullanılmayan krediler devretmez.</p>
       </div>
     </div>
   )

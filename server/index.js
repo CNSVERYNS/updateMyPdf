@@ -19,6 +19,7 @@ import { ocrPdfBuffer, renderPdfPages } from './pdf-render.js'
 import { getExternalToolStatus, getGhostscriptResources, runExternalTool, withTempDirectory } from './external-tools.js'
 
 const app = express()
+app.set('trust proxy', true)
 const port = Number(process.env.PORT || 8787)
 const normalizeOrigin = (value) => String(value || '').trim().replace(/\/$/, '')
 const publicAppOrigin = normalizeOrigin(process.env.PUBLIC_APP_ORIGIN || String(process.env.FRONTEND_ORIGIN || 'http://localhost:5173').split(',')[0]) || 'http://localhost:5173'
@@ -65,6 +66,21 @@ const requireAuth = (request, response, next) => {
     .catch((error) => {
       response.status(error.status || 401).json({ error: error.message || 'Authentication required.' })
     })
+}
+
+const guestAiUsage = new Map()
+const guestAiWindowMs = 24 * 60 * 60 * 1000
+const guestAiGuard = (request, response, next) => {
+  if (request.headers.authorization?.startsWith('Bearer ')) return next()
+  const clientKey = request.ip || request.headers['x-forwarded-for'] || 'anonymous'
+  const now = Date.now()
+  const current = guestAiUsage.get(clientKey)
+  if (current && now - current.startedAt < guestAiWindowMs && current.count >= 1) {
+    return response.status(429).json({ error: 'İlk ücretsiz AI önizlemeni kullandın. Devam etmek için hesap oluştur.' })
+  }
+  if (!current || now - current.startedAt >= guestAiWindowMs) guestAiUsage.set(clientKey, { startedAt: now, count: 1 })
+  else current.count += 1
+  return next()
 }
 
 const safeFileName = (value) => String(value || 'document.pdf')
@@ -833,8 +849,7 @@ app.get('/api/capabilities', (_request, response) => {
   response.json(getCapabilitySummary())
 })
 
-app.use('/api/ai', requireAuth)
-app.use('/api/pdf', requireAuth)
+app.use('/api/ai', guestAiGuard)
 
 app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name: 'image', maxCount: 1 }]), async (request, response) => {
   const prompt = String(request.body?.prompt || '').trim()
