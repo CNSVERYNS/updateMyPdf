@@ -956,6 +956,7 @@ const pdfEditorModel = () => {
   // silently keep the expensive general model after the Luna rollout.
   return !configuredModel || configuredModel === 'gpt-5.6' ? 'gpt-5.6-luna' : configuredModel
 }
+const translationModel = () => process.env.OPENAI_TRANSLATION_MODEL || pdfEditorModel()
 const assistantReasoning = () => process.env.OPENAI_ASSISTANT_REASONING || 'low'
 const normalizeAssistantSources = (sources) => (Array.isArray(sources) ? sources : [])
   .filter((source) => source && typeof source.url === 'string' && /^https?:\/\//i.test(source.url))
@@ -1922,7 +1923,7 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
 Translate every piece of prose on every page. Never summarize, shorten, paraphrase, omit sentences, omit paragraphs, or say that translation is unnecessary. Preserve names, numbers, dates, headings, labels, punctuation, and the order of the content. The source text is grouped by page and its line breaks represent the original visual layout. For each page, return exactly one translate action. The replacement must contain the COMPLETE translation of that page and must preserve the same line-break structure as the source as closely as possible. If a page is already partly in ${targetLanguageHint}, keep the existing target-language text but translate all other text. Never skip the final page. Return only the compact translation JSON schema fields; do not return explanations, summaries, or null fields.`
       : systemInstructions
     const planRequest = {
-      model: pdfEditorModel(),
+      model: translationMode ? translationModel() : pdfEditorModel(),
       instructions: commandInstructions,
       input: [{
         role: 'user',
@@ -1937,7 +1938,7 @@ Translate every piece of prose on every page. Never summarize, shorten, paraphra
         },
       },
       max_output_tokens: translationMode ? 24000 : 8000,
-      reasoning: { effort: 'low' },
+      reasoning: { effort: translationMode ? 'medium' : 'low' },
     }
     let result = await client.responses.create(planRequest, { timeout: 180000 })
 
@@ -1953,12 +1954,24 @@ Translate every piece of prose on every page. Never summarize, shorten, paraphra
       return { ...candidate, actions }
     }
     let plan = normalizeTranslationPlan(JSON.parse(result.output_text))
+    const comparableTranslationText = (value) => String(value || '')
+      .normalize('NFKC')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .toLocaleLowerCase('en-US')
     const translationPlanNeedsRetry = (candidate) => {
       if (!translationMode) return false
       const expectedPages = extractedTranslationPages.map((page) => page.page)
       const actions = Array.isArray(candidate.actions) ? candidate.actions.filter((action) => action?.type === 'translate' && String(action.text || '').trim() && String(action.replacement || '').trim()) : []
       const hasAllPages = !expectedPages.length || expectedPages.every((page) => actions.some((action) => action.page === page))
-      const isNoOp = !actions.length || actions.every((action) => String(action.text).trim() === String(action.replacement).trim())
+      const hasUnchangedPage = extractedTranslationPages.some((page) => {
+        const action = actions.find((candidateAction) => candidateAction.page === page.page)
+        return action && comparableTranslationText(page.text) === comparableTranslationText(action.replacement)
+      })
+      const isNoOp = !actions.length || actions.every((action) => {
+        const page = extractedTranslationPages.find((candidatePage) => candidatePage.page === action.page)
+        return page && comparableTranslationText(page.text) === comparableTranslationText(action.replacement)
+      })
       const isIncomplete = extractedTranslationPages.some((page) => {
         const action = actions.find((candidateAction) => candidateAction.page === page.page)
         if (!action) return false
@@ -1971,7 +1984,7 @@ Translate every piece of prose on every page. Never summarize, shorten, paraphra
         const sentenceStructureLost = sourceSentenceCount > 5 && replacementSentenceCount < Math.max(2, Math.floor(sourceSentenceCount * 0.45))
         return (page.text.length > 160 && replacement.length < page.text.length * 0.45) || lineStructureLost || sentenceStructureLost
       })
-      return !hasAllPages || isNoOp || isIncomplete
+      return !hasAllPages || hasUnchangedPage || isNoOp || isIncomplete
     }
     if (translationPlanNeedsRetry(plan)) {
       const pagePlans = await Promise.all(extractedTranslationPages.map(async (page) => {
