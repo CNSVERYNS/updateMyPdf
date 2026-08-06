@@ -1,3 +1,5 @@
+import { readFileSync, existsSync } from 'node:fs'
+import fontkit from '@pdf-lib/fontkit'
 import { PDFArray, PDFBool, PDFDocument, PDFDict, PDFName, PDFNumber, PDFString, StandardFonts, degrees, rgb } from 'pdf-lib'
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
 import { redactPdfBuffer } from './pdf-render.js'
@@ -151,7 +153,30 @@ const textColor = (color) => ({
   black: rgb(0.08, 0.08, 0.08),
 }[color] || rgb(0.08, 0.08, 0.08))
 
+const embeddedFontCache = new WeakMap()
+const embedCachedFont = (pdfDocument, key, bytes) => {
+  let documentFonts = embeddedFontCache.get(pdfDocument)
+  if (!documentFonts) {
+    documentFonts = new Map()
+    embeddedFontCache.set(pdfDocument, documentFonts)
+  }
+  if (!documentFonts.has(key)) documentFonts.set(key, pdfDocument.embedFont(bytes))
+  return documentFonts.get(key)
+}
+
 const getFont = async (pdfDocument, action = {}) => {
+  const actionText = String(action.text || action.replacement || '')
+  if (/[^\x00-\x7F]/.test(actionText)) {
+    const fontPath = action.fontWeight === 'bold'
+      ? (action.fontStyle === 'italic' ? 'C:\\Windows\\Fonts\\segoeubz.ttf' : 'C:\\Windows\\Fonts\\segoeuib.ttf')
+      : (action.fontStyle === 'italic' ? 'C:\\Windows\\Fonts\\segoeuii.ttf' : 'C:\\Windows\\Fonts\\segoeui.ttf')
+    const candidates = [fontPath, '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']
+    const resolved = candidates.find((candidate) => existsSync(candidate))
+    if (resolved) {
+      pdfDocument.registerFontkit(fontkit)
+      return embedCachedFont(pdfDocument, resolved, readFileSync(resolved))
+    }
+  }
   const family = action.fontFamily || 'helvetica'
   const weight = action.fontWeight || 'normal'
   const style = action.fontStyle || 'normal'
@@ -412,13 +437,10 @@ const selectedPages = (pdfDocument, action) => {
 const drawVisualAction = async (pdfDocument, action) => {
   const pages = selectedPages(pdfDocument, action)
   if (!pages.length || !action.type) return 0
-  const signatureFont = action.signatureStyle === 'bold'
-    ? StandardFonts.HelveticaBold
-    : action.signatureStyle === 'classic'
-      ? StandardFonts.HelveticaOblique
-      : StandardFonts.TimesRomanItalic
-  const font = await pdfDocument.embedFont(['add_signature', 'fill_and_sign'].includes(action.type) ? signatureFont : StandardFonts.Helvetica)
   const text = String(action.text || action.replacement || '').trim()
+  const font = ['add_signature', 'fill_and_sign'].includes(action.type)
+    ? await getFont(pdfDocument, { text, fontWeight: action.signatureStyle === 'bold' ? 'bold' : 'normal', fontStyle: action.signatureStyle === 'bold' ? 'normal' : 'italic', fontFamily: action.signatureStyle === 'elegant' ? 'times' : 'helvetica' })
+    : await pdfDocument.embedFont(StandardFonts.Helvetica)
   const size = Math.max(6, Number(action.size) || 12)
   let applied = 0
 

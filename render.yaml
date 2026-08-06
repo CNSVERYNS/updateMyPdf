@@ -21,6 +21,14 @@ services:
         sync: false
       - key: EMAIL_FROM
         sync: false
+      - key: STRIPE_SECRET_KEY
+        sync: false
+      - key: STRIPE_PRICE_BASIC
+        sync: false
+      - key: STRIPE_PRICE_PRO
+        sync: false
+      - key: STRIPE_PRICE_ULTIMATE
+        sync: false
       - key: FRONTEND_ORIGIN
         sync: false
       - key: FRONTEND_ORIGINS

@@ -97,6 +97,54 @@ const escapeHtml = (value) => String(value || '')
   .replaceAll('"', '&quot;')
   .replaceAll("'", '&#039;')
 
+const stripeRequest = async (endpoint, params = {}) => {
+  const secretKey = String(process.env.STRIPE_SECRET_KEY || '').trim()
+  if (!secretKey) {
+    const error = new Error('Stripe ödeme yönetimi henüz yapılandırılmadı.')
+    error.status = 503
+    throw error
+  }
+  const stripeResponse = await fetch(`https://api.stripe.com/v1/${endpoint}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${secretKey}`,
+      'Content-Type': 'application/x-www-form-urlencoded',
+    },
+    body: new URLSearchParams(params),
+  })
+  const payload = await stripeResponse.json().catch(() => ({}))
+  if (!stripeResponse.ok) {
+    const error = new Error(payload?.error?.message || 'Stripe isteği başarısız oldu.')
+    error.status = stripeResponse.status >= 400 && stripeResponse.status < 500 ? 400 : 502
+    throw error
+  }
+  return payload
+}
+
+const ensureStripeCustomer = async (admin, user) => {
+  const existingCustomerId = String(user.user_metadata?.stripe_customer_id || '').trim()
+  if (existingCustomerId) return existingCustomerId
+  const customer = await stripeRequest('customers', {
+    email: user.email || '',
+    name: user.user_metadata?.full_name || user.email || 'updateMyPDF customer',
+    'metadata[supabase_user_id]': user.id,
+  })
+  const { error } = await admin.auth.admin.updateUserById(user.id, {
+    user_metadata: { ...(user.user_metadata || {}), stripe_customer_id: customer.id },
+  })
+  if (error) throw error
+  return customer.id
+}
+
+const stripePriceForPlan = (plan) => {
+  const prices = {
+    basic: process.env.STRIPE_PRICE_BASIC,
+    pro: process.env.STRIPE_PRICE_PRO,
+    ultimate: process.env.STRIPE_PRICE_ULTIMATE,
+  }
+  return String(prices[String(plan || '').toLowerCase()] || '').trim()
+}
+
 const hashAccessToken = (token) => createHash('sha256').update(String(token || '')).digest('hex')
 
 const normalizeSignaturePlacement = (value) => {
@@ -849,6 +897,7 @@ app.get('/api/health', (_request, response) => {
     aiConfigured: Boolean(process.env.OPENAI_API_KEY),
     supabaseConfigured: Boolean(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_ROLE_KEY),
     emailConfigured: getEmailStatus().configured,
+    stripeConfigured: Boolean(process.env.STRIPE_SECRET_KEY),
     emailFrom: getEmailStatus().from,
     tools: getExternalToolStatus(),
   })
@@ -988,6 +1037,48 @@ app.get('/api/workspace', async (request, response) => {
   }
 })
 
+app.post('/api/billing/portal', requireAuth, async (request, response) => {
+  try {
+    const { admin, user } = request.supabaseContext
+    const customerId = await ensureStripeCustomer(admin, user)
+    const requestedReturnUrl = String(request.body?.returnUrl || '')
+    const safeReturnUrl = requestedReturnUrl.startsWith(publicAppOrigin) ? requestedReturnUrl : publicAppOrigin
+    const portal = await stripeRequest('billing_portal/sessions', {
+      customer: customerId,
+      return_url: safeReturnUrl,
+    })
+    response.json({ url: portal.url })
+  } catch (error) {
+    console.error('[billing-portal]', error?.message || error)
+    response.status(error.status || 500).json({ error: error.status === 503 ? error.message : 'Ödeme yönetim ekranı açılamadı.' })
+  }
+})
+
+app.post('/api/billing/checkout', requireAuth, async (request, response) => {
+  try {
+    const plan = String(request.body?.plan || '').toLowerCase()
+    const price = stripePriceForPlan(plan)
+    if (!price) return response.status(503).json({ error: 'Bu plan için Stripe fiyatı henüz yapılandırılmadı.' })
+    const { admin, user } = request.supabaseContext
+    const customerId = await ensureStripeCustomer(admin, user)
+    const checkout = await stripeRequest('checkout/sessions', {
+      customer: customerId,
+      mode: 'subscription',
+      'line_items[0][price]': price,
+      'line_items[0][quantity]': '1',
+      success_url: `${publicAppOrigin}/?billing=success`,
+      cancel_url: `${publicAppOrigin}/?billing=cancelled`,
+      allow_promotion_codes: 'true',
+      'metadata[supabase_user_id]': user.id,
+      'subscription_data[metadata][supabase_user_id]': user.id,
+    })
+    response.json({ url: checkout.url })
+  } catch (error) {
+    console.error('[billing-checkout]', error?.message || error)
+    response.status(error.status || 500).json({ error: error.status === 503 ? error.message : 'Ödeme ekranı açılamadı.' })
+  }
+})
+
 app.post('/api/signatures/request', async (request, response) => {
   try {
     const { admin, user } = await getSupabaseUser(request)
@@ -998,6 +1089,7 @@ app.post('/api/signatures/request', async (request, response) => {
     const documentName = safeFileName(request.body?.documentName || 'document.pdf')
     const message = String(request.body?.message || '').trim().slice(0, 2000)
     const workflowType = request.body?.workflowType === 'review' ? 'review' : 'signature'
+    const documentLanguage = String(request.body?.documentLanguage || '').trim().slice(0, 80)
     const signaturePlacement = normalizeSignaturePlacement(request.body?.signaturePlacement)
     const requestedExpiry = Number(request.body?.expiresIn || 604800)
     const expiresIn = Math.min(Math.max(Number.isFinite(requestedExpiry) ? requestedExpiry : 604800, 3600), 2592000)
@@ -1019,7 +1111,7 @@ app.post('/api/signatures/request', async (request, response) => {
       message: message || null,
       token_hash: hashAccessToken(rawToken),
       expires_at: expiresAt,
-      metadata: { senderName, senderEmail: user.email, signaturePlacement },
+      metadata: { senderName, senderEmail: user.email, signaturePlacement, documentLanguage: documentLanguage || null },
     }).select('id').single()
     if (insertError) throw insertError
 
@@ -1167,20 +1259,40 @@ app.post('/api/signatures/:token/sign', async (request, response) => {
     const fieldHeight = Math.min(pageHeight * placement.height, pageHeight - 40)
     const fieldX = Math.min(Math.max(20, pageWidth * placement.left), pageWidth - fieldWidth - 20)
     const fieldBottom = Math.max(24, pageHeight - (pageHeight * placement.top) - fieldHeight)
-    const signatureY = Math.min(pageHeight - 24, fieldBottom + Math.min(24, fieldHeight * 0.42))
-    const signedActions = [{
-      type: 'fill_and_sign',
-      page: pageNumber,
-      text: signatureText,
-      signatureStyle,
-      x: fieldX,
-      y: signatureY,
-      width: fieldWidth,
-      height: fieldHeight,
-      size: Math.max(12, Math.min(18, fieldHeight * 0.32)),
-      color: 'blue',
-    }]
-    if (data.recipient_name) signedActions.unshift({ type: 'add_text', page: pageNumber, text: data.recipient_name, x: fieldX, y: Math.min(pageHeight - 18, signatureY + Math.min(24, fieldHeight * 0.45)), size: Math.max(8, Math.min(12, fieldHeight * 0.2)), fontWeight: 'bold', color: 'black' })
+    const language = String(data.metadata?.documentLanguage || '').toLowerCase()
+    const signatureLabels = language.includes('turk') || language.includes('türk') || language.startsWith('tr')
+      ? { name: 'İmzalayan adı:', signature: 'İmza:' }
+      : language.includes('span') || language.startsWith('es')
+        ? { name: 'Nombre del firmante:', signature: 'Firma:' }
+        : language.includes('fren') || language.startsWith('fr')
+          ? { name: 'Nom du signataire:', signature: 'Signature:' }
+          : language.includes('germ') || language.startsWith('de')
+            ? { name: 'Name des Unterzeichners:', signature: 'Unterschrift:' }
+            : { name: 'Signer name:', signature: 'Signature:' }
+    const signatureSize = Math.max(12, Math.min(18, fieldHeight * 0.24))
+    const labelSize = Math.max(7, Math.min(10, fieldHeight * 0.12))
+    const nameSize = Math.max(8, Math.min(12, fieldHeight * 0.14))
+    const signatureY = Math.min(pageHeight - 24, fieldBottom + 10)
+    const signatureLabelY = Math.min(pageHeight - 18, signatureY + signatureSize + 8)
+    const nameValueY = Math.min(pageHeight - 18, signatureLabelY + labelSize + 8)
+    const nameLabelY = Math.min(pageHeight - 18, nameValueY + nameSize + 6)
+    const signedActions = [
+      { type: 'add_text', page: pageNumber, text: signatureLabels.name, x: fieldX, y: nameLabelY, size: labelSize, fontWeight: 'bold', color: 'black' },
+      { type: 'add_text', page: pageNumber, text: data.recipient_name || '', x: fieldX, y: nameValueY, size: nameSize, color: 'black' },
+      { type: 'add_text', page: pageNumber, text: signatureLabels.signature, x: fieldX, y: signatureLabelY, size: labelSize, fontWeight: 'bold', color: 'black' },
+      {
+        type: 'fill_and_sign',
+        page: pageNumber,
+        text: signatureText,
+        signatureStyle,
+        x: fieldX,
+        y: signatureY,
+        width: fieldWidth,
+        height: fieldHeight,
+        size: signatureSize,
+        color: 'blue',
+      },
+    ]
     const signedPdf = await applyEditPlan(sourceBuffer, signedActions)
     const signedPdfSha256 = createHash('sha256').update(signedPdf.pdfBytes).digest('hex')
     signatureStage = 'upload-signed-pdf'

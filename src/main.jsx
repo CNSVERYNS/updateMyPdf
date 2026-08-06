@@ -2,11 +2,13 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   ArrowUp,
+  Bell,
   Bot,
   Check,
   ChevronDown,
   Cloud,
   CloudUpload,
+  CreditCard,
   Download,
   FilePlus2,
   FileText,
@@ -16,10 +18,12 @@ import {
   ImagePlus,
   Link2,
   LoaderCircle,
+  KeyRound,
   ListChecks,
   LogIn,
   LogOut,
   MessageSquareText,
+  Mail,
   MoreHorizontal,
   PanelRight,
   PenLine,
@@ -27,8 +31,11 @@ import {
   Search,
   Sparkles,
   Split,
+  ShieldCheck,
   Trash2,
   Upload,
+  UserRound,
+  WalletCards,
   X,
   ZoomIn,
   ZoomOut,
@@ -349,13 +356,52 @@ function App() {
       const result = await supabase.auth.updateUser(updates)
       if (result.error) throw result.error
       setSession(result.data.user ? { ...session, user: result.data.user } : session)
-      setShowAccount(false)
       setToast({ tone: 'success', text: 'Hesap bilgilerin güncellendi.' })
     } catch (error) {
       setProfileError(error.message || 'Hesap bilgileri güncellenemedi.')
     } finally {
       setProfileBusy(false)
     }
+  }
+
+  const requestPasswordVerification = async () => {
+    if (!supabase || !session?.user?.email) throw new Error('Hesabında doğrulanmış bir e-posta bulunamadı.')
+    const result = await supabase.auth.signInWithOtp({ email: session.user.email, options: { shouldCreateUser: false } })
+    if (result.error) throw result.error
+  }
+
+  const confirmPasswordChange = async ({ code, password }) => {
+    if (!supabase || !session?.user?.email) throw new Error('Hesap oturumu bulunamadı.')
+    const verification = await supabase.auth.verifyOtp({ email: session.user.email, token: code, type: 'email' })
+    if (verification.error) throw verification.error
+    const result = await supabase.auth.updateUser({ password })
+    if (result.error) throw result.error
+    const currentSession = await supabase.auth.getSession()
+    if (currentSession.data.session) setSession(currentSession.data.session)
+  }
+
+  const requestEmailChange = async (email) => {
+    if (!supabase) throw new Error('Supabase hesabı yapılandırılmadı.')
+    const result = await supabase.auth.updateUser({ email: email.trim(), options: { emailRedirectTo: window.location.origin } })
+    if (result.error) throw result.error
+  }
+
+  const openBillingPortal = async () => {
+    const result = await apiFetch('/api/billing/portal', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ returnUrl: window.location.href }) })
+    const data = await result.json().catch(() => ({}))
+    if (!result.ok) throw new Error(data.error || 'Ödeme yönetim ekranı açılamadı.')
+    if (data.url) window.location.assign(data.url)
+  }
+
+  const startCheckout = async (plan) => {
+    if (!session) {
+      openAuthPrompt()
+      return
+    }
+    const result = await apiFetch('/api/billing/checkout', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ plan }) })
+    const data = await result.json().catch(() => ({}))
+    if (!result.ok) throw new Error(data.error || 'Ödeme ekranı açılamadı.')
+    if (data.url) window.location.assign(data.url)
   }
 
   const signOut = async () => {
@@ -368,6 +414,7 @@ function App() {
     setCloudFiles([])
     setCurrentCloudPath('')
     setShowCloudFiles(false)
+    setShowAccount(false)
     setMessages(initialMessages)
     setAssistantProfile(null)
     setCachedDocument(null)
@@ -445,6 +492,7 @@ function App() {
           workflowType: details.workflowType,
           expiresIn: details.expiresIn,
           signaturePlacement: details.signaturePlacement,
+          documentLanguage: assistantProfile?.documentLanguage || '',
         }),
       })
       const data = await result.json().catch(() => ({}))
@@ -1014,9 +1062,9 @@ function App() {
       {showSignatureRequest && <SignatureRequestModal busy={signatureRequestBusy} error={signatureRequestError} result={signatureRequestResult} documentName={file?.name} senderName={session?.user?.user_metadata?.full_name || session?.user?.email} senderEmail={session?.user?.email} pageCount={pageCount} currentPage={currentPage} onClose={() => setShowSignatureRequest(false)} onSubmit={createSignatureRequest} onOpenRequests={() => { setShowSignatureRequest(false); setShowSignatureRequests(true) }} />}
       {showSignatureRequests && <SignatureRequestsDrawer session={session} authHeaders={authHeaders} onClose={() => setShowSignatureRequests(false)} onCancel={cancelSignatureRequest} onResend={resendSignatureRequest} />}
       {showAuth && <AuthModal mode={authMode} busy={authBusy} error={authError} onModeChange={(mode) => { setAuthMode(mode); setAuthError('') }} onClose={() => setShowAuth(false)} onSubmit={handleAuthSubmit} />}
-      {showAccount && session && <AccountModal session={session} busy={profileBusy} error={profileError} onClose={() => setShowAccount(false)} onSubmit={handleProfileSave} onOpenPricing={() => { setShowAccount(false); setShowPricing(true) }} />}
+      {showAccount && session && <AccountManagementModal session={session} busy={profileBusy} error={profileError} onClose={() => setShowAccount(false)} onProfileSave={handleProfileSave} onChangeEmail={requestEmailChange} onRequestPasswordCode={requestPasswordVerification} onConfirmPasswordChange={confirmPasswordChange} onOpenPricing={() => { setShowAccount(false); setShowPricing(true) }} onOpenBilling={openBillingPortal} onSignOut={signOut} />}
       {showAccountNudge && !session && <AccountNudge onClose={() => setShowAccountNudge(false)} onSignup={openAuthPrompt} onPricing={() => setShowPricing(true)} />}
-      {showPricing && <PricingModal currentPlan={session?.user?.user_metadata?.plan || 'basic'} onClose={() => setShowPricing(false)} onSelect={() => { setShowPricing(false); if (session) setToast({ tone: 'success', text: 'Stripe ödeme bağlantısı bir sonraki adımda aktifleşecek.' }); else openAuthPrompt() }} />}
+      {showPricing && <PricingModal currentPlan={session?.user?.user_metadata?.plan || 'basic'} onClose={() => setShowPricing(false)} onSelect={async (plan) => { try { await startCheckout(plan) } catch (checkoutError) { setToast({ tone: 'error', text: checkoutError.message || 'Ödeme ekranı açılamadı.' }) } }} />}
       {toast && <ToastNotice notification={toast} onClose={() => setToast(null)} />}
     </div>
   )
@@ -1313,7 +1361,7 @@ function SignatureRequestModal({ busy, error, result, documentName, senderName, 
             <p className="auth-description"><strong>{documentName}</strong> dosyasını güvenli bir linkle başka bir kişiye gönder.</p>
             <form onSubmit={submit}>
               <div className="signature-sender-card"><span>Gönderen hesap</span><strong>{senderName}</strong><small>{senderEmail}</small></div>
-              <div className="signature-placement-field"><div className="signature-placement-heading"><label>İmza alanı</label><span>PDF üzerinde tıklayarak konumu seç</span></div><div className="signature-paper" onClick={choosePlacement} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') choosePlacement(event) }}><div className="signature-paper-line one" /><div className="signature-paper-line two" /><div className="signature-paper-line three" /><div className="signature-placement-marker" style={{ left: `${placement.left * 100}%`, top: `${placement.top * 100}%`, width: `${placement.width * 100}%`, height: `${placement.height * 100}%` }}><PenLine size={12} /> İmza alanı</div></div><div className="signature-placement-controls"><label>Sayfa<select value={placement.page} onChange={(event) => setPlacement((current) => ({ ...current, page: Number(event.target.value) }))}>{Array.from({ length: Math.max(1, pageCount || 1) }, (_item, index) => <option value={index + 1} key={index + 1}>{index + 1}</option>)}</select></label><span>Seçilen alan imzalı PDF’e aynı konuma işlenecek.</span></div></div>
+              <div className="signature-placement-field"><div className="signature-placement-heading"><label>İmza alanı</label><span>PDF üzerinde tıklayarak konumu seç</span></div><div className="signature-paper" onClick={choosePlacement} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') choosePlacement(event) }}><div className="signature-paper-line one" /><div className="signature-paper-line two" /><div className="signature-paper-line three" /><div className="signature-placement-marker" style={{ left: `${placement.left * 100}%`, top: `${placement.top * 100}%`, width: `${placement.width * 100}%`, height: `${placement.height * 100}%` }}><PenLine size={11} /><div className="signature-placement-preview"><strong>İmzalayan adı</strong><span>İmza</span></div></div></div><div className="signature-placement-controls"><label>Sayfa<select value={placement.page} onChange={(event) => setPlacement((current) => ({ ...current, page: Number(event.target.value) }))}>{Array.from({ length: Math.max(1, pageCount || 1) }, (_item, index) => <option value={index + 1} key={index + 1}>{index + 1}</option>)}</select></label><span>Seçilen alan imzalı PDF’e aynı konuma işlenecek.</span></div></div>
               <label>Akış türü<select value={workflowType} onChange={(event) => setWorkflowType(event.target.value)}><option value="signature">İmza iste</option><option value="review">İnceleme iste</option></select></label>
               <label>Alıcı e-posta<input type="email" value={recipientEmail} onChange={(event) => setRecipientEmail(event.target.value)} required autoComplete="email" placeholder="alici@example.com" /></label>
               <label>Alıcı adı (opsiyonel)<input value={recipientName} onChange={(event) => setRecipientName(event.target.value)} autoComplete="name" placeholder="Ali Yılmaz" /></label>
@@ -1417,6 +1465,203 @@ function AccountModal({ session, busy, error, onClose, onSubmit, onOpenPricing }
   )
 }
 
+function AccountManagementModal({ session, busy, error, onClose, onProfileSave, onChangeEmail, onRequestPasswordCode, onConfirmPasswordChange, onOpenPricing, onOpenBilling, onSignOut }) {
+  const [section, setSection] = useState('overview')
+  const [fullName, setFullName] = useState(session.user.user_metadata?.full_name || '')
+  const [marketingConsent, setMarketingConsent] = useState(Boolean(session.user.user_metadata?.marketing_consent))
+  const [newEmail, setNewEmail] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [passwordConfirmation, setPasswordConfirmation] = useState('')
+  const [verificationCode, setVerificationCode] = useState('')
+  const [passwordCodeSent, setPasswordCodeSent] = useState(false)
+  const [localBusy, setLocalBusy] = useState(false)
+  const [localError, setLocalError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  const displayName = fullName || session.user.email || 'updateMyPDF user'
+  const initials = displayName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join('').toUpperCase() || 'U'
+  const currentPlan = String(session.user.user_metadata?.plan || 'basic').toUpperCase()
+  const sectionTitles = {
+    overview: ['Hesap özeti', 'Hesabını, güvenliğini ve planını tek merkezden yönet.'],
+    profile: ['Profil bilgileri', 'Gönderen kimliğini ve iletişim tercihlerini güncel tut.'],
+    security: ['Güvenlik ve erişim', 'E-posta ve şifre değişiklikleri doğrulama adımıyla korunur.'],
+    billing: ['Ödeme ve plan', 'Planını ve ödeme yöntemini güvenli Stripe ekranından yönet.'],
+    notifications: ['Bildirim tercihleri', 'updateMyPDF’den almak istediğin iletişimleri seç.'],
+  }
+  const navItems = [
+    { id: 'overview', label: 'Hesap özeti', icon: UserRound },
+    { id: 'profile', label: 'Profil bilgileri', icon: UserRound },
+    { id: 'security', label: 'Güvenlik ve erişim', icon: ShieldCheck },
+    { id: 'billing', label: 'Ödeme ve plan', icon: CreditCard },
+    { id: 'notifications', label: 'Bildirim tercihleri', icon: Bell },
+  ]
+
+  const clearFeedback = () => {
+    setLocalError('')
+    setNotice('')
+  }
+
+  const submitProfile = async (event) => {
+    event.preventDefault()
+    clearFeedback()
+    await onProfileSave({ fullName: fullName.trim(), marketingConsent })
+    setNotice('Profil bilgilerin güncellendi.')
+  }
+
+  const submitEmail = async (event) => {
+    event.preventDefault()
+    clearFeedback()
+    if (!newEmail.trim() || !newEmail.includes('@')) {
+      setLocalError('Geçerli bir yeni e-posta adresi yaz.')
+      return
+    }
+    if (newEmail.trim().toLowerCase() === String(session.user.email || '').toLowerCase()) {
+      setLocalError('Yeni e-posta mevcut adresinden farklı olmalı.')
+      return
+    }
+    setLocalBusy(true)
+    try {
+      await onChangeEmail(newEmail.trim())
+      setNewEmail('')
+      setNotice('Yeni e-posta adresine doğrulama bağlantısı gönderildi. Değişiklik, bağlantıyı onayladığında tamamlanacak.')
+    } catch (changeError) {
+      setLocalError(changeError.message || 'E-posta adresi güncellenemedi.')
+    } finally {
+      setLocalBusy(false)
+    }
+  }
+
+  const sendPasswordCode = async () => {
+    clearFeedback()
+    setLocalBusy(true)
+    try {
+      await onRequestPasswordCode()
+      setPasswordCodeSent(true)
+      setNotice('Doğrulama kodu kayıtlı e-posta adresine gönderildi.')
+    } catch (codeError) {
+      setLocalError(codeError.message || 'Doğrulama kodu gönderilemedi.')
+    } finally {
+      setLocalBusy(false)
+    }
+  }
+
+  const submitPassword = async (event) => {
+    event.preventDefault()
+    clearFeedback()
+    if (!passwordCodeSent) {
+      setLocalError('Önce doğrulama kodu istemelisin.')
+      return
+    }
+    if (newPassword.length < 8) {
+      setLocalError('Yeni şifre en az 8 karakter olmalı.')
+      return
+    }
+    if (newPassword !== passwordConfirmation) {
+      setLocalError('Yeni şifre tekrarı eşleşmiyor.')
+      return
+    }
+    setLocalBusy(true)
+    try {
+      await onConfirmPasswordChange({ code: verificationCode.trim(), password: newPassword })
+      setNewPassword('')
+      setPasswordConfirmation('')
+      setVerificationCode('')
+      setPasswordCodeSent(false)
+      setNotice('Şifren güncellendi.')
+    } catch (passwordError) {
+      setLocalError(passwordError.message || 'Şifre güncellenemedi.')
+    } finally {
+      setLocalBusy(false)
+    }
+  }
+
+  const openBilling = async () => {
+    clearFeedback()
+    setLocalBusy(true)
+    try {
+      await onOpenBilling()
+    } catch (billingError) {
+      setLocalError(billingError.message || 'Ödeme yönetim ekranı açılamadı.')
+    } finally {
+      setLocalBusy(false)
+    }
+  }
+
+  const renderOverview = () => (
+    <>
+      <section className="account-welcome-card">
+        <div className="account-welcome-icon"><Sparkles size={20} /></div>
+        <div><span>UPDATE MYPDF ACCOUNT CENTER</span><h3>Belgelerin için güvenli çalışma alanın hazır.</h3><p>Dosyaların, imza akışların ve AI kredilerin bu hesaba bağlı olarak korunur.</p></div>
+      </section>
+      <div className="account-stat-grid">
+        <div className="account-stat-card"><span>AKTİF PLAN</span><strong>{currentPlan}</strong><small>Planını ve kullanımını yönet</small></div>
+        <div className="account-stat-card"><span>HESAP E-POSTASI</span><strong>{session.user.email || '—'}</strong><small>Doğrulanmış iletişim adresi</small></div>
+        <div className="account-stat-card"><span>GÜVENLİK</span><strong><ShieldCheck size={15} /> Korumalı</strong><small>E-posta doğrulaması aktif</small></div>
+      </div>
+      <div className="account-card-grid">
+        <article className="account-card"><div className="account-card-icon"><UserRound size={17} /></div><div><h3>Profil bilgileri</h3><p>{displayName}<br />{session.user.email}</p></div><button type="button" className="account-card-link" onClick={() => { clearFeedback(); setSection('profile') }}>Düzenle <ChevronDown size={13} /></button></article>
+        <article className="account-card"><div className="account-card-icon"><KeyRound size={17} /></div><div><h3>Güvenlik</h3><p>Şifre değişikliği ve e-posta güncellemesi doğrulama koduyla korunur.</p></div><button type="button" className="account-card-link" onClick={() => { clearFeedback(); setSection('security') }}>Yönet <ChevronDown size={13} /></button></article>
+        <article className="account-card"><div className="account-card-icon"><WalletCards size={17} /></div><div><h3>Ödeme yöntemi</h3><p>Kart bilgilerin Stripe’ın güvenli ödeme ekranında tutulur.</p></div><button type="button" className="account-card-link" onClick={() => { clearFeedback(); setSection('billing') }}>Aç <ChevronDown size={13} /></button></article>
+      </div>
+    </>
+  )
+
+  const renderProfile = () => (
+    <form className="account-form" onSubmit={submitProfile}>
+      <div className="account-form-grid">
+        <label>Ad soyad<input value={fullName} onChange={(event) => setFullName(event.target.value)} required autoComplete="name" /></label>
+        <label>Hesap e-postası<input value={session.user.email || ''} readOnly disabled /></label>
+      </div>
+      <div className="account-info-panel"><Mail size={16} /><div><strong>E-posta adresini değiştirmek mi istiyorsun?</strong><span>Güvenlik nedeniyle yeni adrese doğrulama bağlantısı gönderilir.</span></div><button type="button" className="account-card-link" onClick={() => setSection('security')}>Güvenliğe git</button></div>
+      <label className="auth-checkbox"><input type="checkbox" checked={marketingConsent} onChange={(event) => setMarketingConsent(event.target.checked)} /><span>Ürün güncellemeleri, yeni özellikler ve fırsatlar hakkında e-posta almak istiyorum.</span></label>
+      {error && <div className="auth-error">{error}</div>}
+      {notice && <div className="account-success"><Check size={14} /> {notice}</div>}
+      <button className="auth-submit account-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} Değişiklikleri kaydet</button>
+    </form>
+  )
+
+  const renderSecurity = () => (
+    <div className="account-security-stack">
+      <section className="account-panel-card">
+        <div className="account-panel-heading"><div className="account-card-icon"><Mail size={17} /></div><div><h3>E-posta adresi</h3><p>Mevcut adresin: <strong>{session.user.email}</strong></p></div></div>
+        <form className="account-form" onSubmit={submitEmail}><label>Yeni e-posta adresi<input type="email" value={newEmail} onChange={(event) => setNewEmail(event.target.value)} placeholder="yeni-adres@example.com" autoComplete="email" /></label><button className="account-outline-button" type="submit" disabled={localBusy}>Doğrulama bağlantısı gönder</button></form>
+      </section>
+      <section className="account-panel-card">
+        <div className="account-panel-heading"><div className="account-card-icon"><KeyRound size={17} /></div><div><h3>Şifre değiştir</h3><p>İşleme başlamadan önce kayıtlı e-posta adresine tek kullanımlık kod gönderilir.</p></div></div>
+        <form className="account-form" onSubmit={submitPassword}><div className="account-form-grid"><label>Yeni şifre<input type="password" value={newPassword} onChange={(event) => setNewPassword(event.target.value)} minLength={8} autoComplete="new-password" placeholder="En az 8 karakter" /></label><label>Yeni şifre tekrarı<input type="password" value={passwordConfirmation} onChange={(event) => setPasswordConfirmation(event.target.value)} minLength={8} autoComplete="new-password" /></label></div><div className="account-code-row"><input value={verificationCode} onChange={(event) => setVerificationCode(event.target.value.replace(/\D/g, '').slice(0, 6))} inputMode="numeric" placeholder="6 haneli kod" disabled={!passwordCodeSent} /><button className="account-outline-button" type="button" onClick={sendPasswordCode} disabled={localBusy}>{passwordCodeSent ? 'Kodu tekrar gönder' : 'Kod gönder'}</button></div><button className="auth-submit account-submit" type="submit" disabled={localBusy || !passwordCodeSent || verificationCode.length < 6}>{localBusy ? <LoaderCircle className="spin" size={16} /> : <ShieldCheck size={16} />} Şifreyi güncelle</button></form>
+      </section>
+    </div>
+  )
+
+  const renderBilling = () => (
+    <div className="account-security-stack">
+      <section className="account-billing-hero"><div><span>MEVCUT PLAN</span><h3>{currentPlan} plan</h3><p>AI kredileri, cloud depolama ve imza akışlarını tek yerden yönet.</p></div><button type="button" className="auth-submit" onClick={onOpenPricing}>Planları karşılaştır</button></section>
+      <section className="account-panel-card"><div className="account-panel-heading"><div className="account-card-icon"><CreditCard size={17} /></div><div><h3>Ödeme yöntemi</h3><p>Kart bilgilerin updateMyPDF sunucularında tutulmaz. Stripe’ın PCI uyumlu Customer Portal ekranında güvenle güncellenir.</p></div></div><button type="button" className="account-outline-button account-wide-button" onClick={openBilling} disabled={localBusy}>{localBusy ? <LoaderCircle className="spin" size={14} /> : <WalletCards size={14} />} Ödeme yöntemini yönet</button></section>
+      <section className="account-panel-card account-feature-list"><div className="account-panel-heading"><div className="account-card-icon"><ShieldCheck size={17} /></div><div><h3>Güvenli ödeme akışı</h3><p>Abonelik, fatura ve kart değişiklikleri Stripe tarafında işlenir.</p></div></div><ul><li><Check size={14} /> Kart bilgisi uygulamaya kaydedilmez.</li><li><Check size={14} /> Fatura geçmişi Stripe Portal’da erişilebilir.</li><li><Check size={14} /> İstediğin zaman planını ve ödeme yöntemini değiştirebilirsin.</li></ul></section>
+    </div>
+  )
+
+  const renderNotifications = () => (
+    <section className="account-panel-card"><div className="account-panel-heading"><div className="account-card-icon"><Bell size={17} /></div><div><h3>İletişim tercihleri</h3><p>Ürün duyuruları ve faydalı güncellemeler için tercihlerini buradan yönet.</p></div></div><label className="auth-checkbox account-notification-row"><input type="checkbox" checked={marketingConsent} onChange={(event) => setMarketingConsent(event.target.checked)} /><span><strong>Ürün güncellemeleri</strong><small>Yeni özellikler, güvenlik duyuruları ve önemli platform haberleri.</small></span></label><button type="button" className="account-outline-button" onClick={submitProfile} disabled={busy}>{busy ? 'Kaydediliyor...' : 'Tercihleri kaydet'}</button></section>
+  )
+
+  const content = section === 'overview' ? renderOverview() : section === 'profile' ? renderProfile() : section === 'security' ? renderSecurity() : section === 'billing' ? renderBilling() : renderNotifications()
+
+  return (
+    <div className="modal-backdrop account-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !localBusy && !busy) onClose() }}>
+      <div className="account-management">
+        <aside className="account-sidebar">
+          <div className="account-sidebar-brand"><div className="brand-mark"><Sparkles size={16} /></div><div><strong>updateMyPDF</strong><span>ACCOUNT CENTER</span></div><button className="icon-button light account-close" onClick={onClose}><X size={17} /></button></div>
+          <div className="account-identity"><div className="account-avatar-large">{initials}</div><div><strong>{displayName}</strong><span>{session.user.email}</span></div><em><Check size={11} /> verified</em></div>
+          <nav className="account-nav">{navItems.map(({ id, label, icon: Icon }) => <button type="button" key={id} className={section === id ? 'active' : ''} onClick={() => { clearFeedback(); setSection(id) }}><Icon size={16} /><span>{label}</span><ChevronDown className="account-nav-chevron" size={14} /></button>)}</nav>
+          <div className="account-sidebar-footer"><p><ShieldCheck size={14} /> Belgelerin ve hesabın güvenli bağlantıyla korunur.</p><button type="button" onClick={onSignOut}><LogOut size={14} /> Çıkış yap</button></div>
+        </aside>
+        <main className="account-content"><header className="account-content-heading"><div><span>ACCOUNT MANAGEMENT</span><h2>{sectionTitles[section][0]}</h2><p>{sectionTitles[section][1]}</p></div><div className="account-heading-badge"><ShieldCheck size={13} /> Secure account</div></header>{(localError || (section !== 'profile' && error)) && <div className="auth-error account-inline-error">{localError || error}</div>}{notice && section !== 'profile' && <div className="account-success"><Check size={14} /> {notice}</div>}<div className="account-content-body">{content}</div></main>
+      </div>
+    </div>
+  )
+}
+
 function AuthModal({ mode, busy, error, onModeChange, onClose, onSubmit }) {
   const [fullName, setFullName] = useState('')
   const [email, setEmail] = useState('')
@@ -1472,7 +1717,7 @@ function PricingModal({ currentPlan, onClose, onSelect }) {
             <p>{plan.description}</p>
             <div className="pricing-price"><strong>${plan.price}</strong><span>/ ay</span></div>
             <ul>{plan.features.map((feature) => <li key={feature}><Check size={13} /> {feature}</li>)}</ul>
-            <button type="button" className={plan.featured ? 'auth-submit pricing-cta' : 'auth-switch pricing-cta'} onClick={onSelect}>{currentPlan === plan.id ? 'Planı yönet' : `${plan.name} planını seç`}</button>
+            <button type="button" className={plan.featured ? 'auth-submit pricing-cta' : 'auth-switch pricing-cta'} onClick={() => onSelect(plan.id)}>{currentPlan === plan.id ? 'Planı yönet' : `${plan.name} planını seç`}</button>
           </article>)}
         </div>
         <p className="pricing-footnote">AI kredileri belge uzunluğu ve kullanılan modele göre hesaplanır. Kullanılmayan krediler devretmez.</p>
