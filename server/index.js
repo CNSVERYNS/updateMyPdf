@@ -109,6 +109,8 @@ const normalizeSignaturePlacement = (value) => {
   }
 }
 
+const normalizeSignatureStyle = (value) => ['elegant', 'classic', 'bold'].includes(String(value || '').toLowerCase()) ? String(value).toLowerCase() : 'elegant'
+
 const addAuditEvent = async (admin, event) => {
   const { error } = await admin.from('pdf_audit_events').insert({
     owner_id: event.ownerId || null,
@@ -728,6 +730,7 @@ app.post('/api/signatures/:token/sign', async (request, response) => {
   try {
     const admin = getSupabaseAdmin()
     const signatureText = String(request.body?.signatureText || '').trim().slice(0, 500)
+    const signatureStyle = normalizeSignatureStyle(request.body?.signatureStyle)
     if (!signatureText) return response.status(400).json({ error: 'İmza metni gerekli.' })
     const { data, error } = await admin.from('signature_requests').select('id,owner_id,recipient_email,recipient_name,document_path,document_name,workflow_type,status,expires_at,metadata').eq('token_hash', hashAccessToken(request.params.token)).maybeSingle()
     if (error) throw error
@@ -754,6 +757,7 @@ app.post('/api/signatures/:token/sign', async (request, response) => {
       type: 'fill_and_sign',
       page: pageNumber,
       text: signatureText,
+      signatureStyle,
       x: fieldX,
       y: signatureY,
       width: fieldWidth,
@@ -769,12 +773,12 @@ app.post('/api/signatures/:token/sign', async (request, response) => {
     const { error: uploadError } = await admin.storage.from('pdfs').upload(signedPath, signedPdf.pdfBytes, { contentType: 'application/pdf', upsert: false })
     if (uploadError) throw uploadError
     const signedAt = new Date().toISOString()
-    const metadata = { ...(data.metadata || {}), signedDocumentPath: signedPath, signedAt, signedDocumentSha256: signedPdfSha256 }
+    const metadata = { ...(data.metadata || {}), signatureStyle, signedDocumentPath: signedPath, signedAt, signedDocumentSha256: signedPdfSha256 }
     signatureStage = 'save-signature-record'
     const { error: updateError } = await admin.from('signature_requests').update({ status: 'signed', signed_at: signedAt, signature_text: signatureText, metadata }).eq('id', data.id)
     if (updateError) throw updateError
     try {
-      await addAuditEvent(admin, { ownerId: data.owner_id, requestId: data.id, eventType: 'request_signed', actorEmail: data.recipient_email, details: { signatureTextLength: signatureText.length, signedDocumentPath: signedPath, signedDocumentSha256: signedPdfSha256, ip: request.ip || null, userAgent: request.headers['user-agent'] || null } })
+      await addAuditEvent(admin, { ownerId: data.owner_id, requestId: data.id, eventType: 'request_signed', actorEmail: data.recipient_email, details: { signatureTextLength: signatureText.length, signatureStyle, signedDocumentPath: signedPath, signedDocumentSha256: signedPdfSha256, ip: request.ip || null, userAgent: request.headers['user-agent'] || null } })
     } catch (auditError) {
       console.error('[signature-audit-after-sign]', auditError?.message || auditError)
     }

@@ -412,7 +412,12 @@ const selectedPages = (pdfDocument, action) => {
 const drawVisualAction = async (pdfDocument, action) => {
   const pages = selectedPages(pdfDocument, action)
   if (!pages.length || !action.type) return 0
-  const font = await pdfDocument.embedFont(['add_signature', 'fill_and_sign'].includes(action.type) ? StandardFonts.HelveticaOblique : StandardFonts.Helvetica)
+  const signatureFont = action.signatureStyle === 'bold'
+    ? StandardFonts.HelveticaBold
+    : action.signatureStyle === 'classic'
+      ? StandardFonts.HelveticaOblique
+      : StandardFonts.TimesRomanItalic
+  const font = await pdfDocument.embedFont(['add_signature', 'fill_and_sign'].includes(action.type) ? signatureFont : StandardFonts.Helvetica)
   const text = String(action.text || action.replacement || '').trim()
   const size = Math.max(6, Number(action.size) || 12)
   let applied = 0
