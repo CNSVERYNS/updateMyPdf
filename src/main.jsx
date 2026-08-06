@@ -914,6 +914,10 @@ function App() {
 
         <div className="top-actions">
           {session ? <>
+            {tokenUsage && <button className={`token-balance ${tokenUsage.low ? 'low' : ''}`} title={`${tokenUsage.planName} planı · ${tokenUsage.remaining} / ${tokenUsage.limit} AI tokenı kaldı`} onClick={() => tokenUsage.low ? setShowTokenReloadNudge(true) : setShowAccount(true)}>
+              <span className="token-balance-icon" aria-hidden="true">⚡</span>
+              <span><strong>{tokenUsage.remaining}</strong><small>/{tokenUsage.limit} token</small></span>
+            </button>}
             <button className="icon-button" title="Geçmişi göster" aria-label="Geçmişi göster" onClick={() => setShowHistory((value) => !value)}>
               <span className="topbar-emoji" aria-hidden="true">🕘</span>
             </button>
@@ -923,10 +927,6 @@ function App() {
             <button className="icon-button" title="PDF’leri birleştir" aria-label="PDF’leri birleştir" onClick={() => mergeInputRef.current?.click()}>
               {isMerging ? <LoaderCircle className="spin" size={17} /> : <span className="topbar-emoji" aria-hidden="true">🧩</span>}
             </button>
-            {tokenUsage && <button className={`token-balance ${tokenUsage.low ? 'low' : ''}`} title={`${tokenUsage.planName} planı · ${tokenUsage.remaining} / ${tokenUsage.limit} AI tokenı kaldı`} onClick={() => tokenUsage.low ? setShowTokenReloadNudge(true) : setShowAccount(true)}>
-              <span className="token-balance-icon" aria-hidden="true">⚡</span>
-              <span><strong>{tokenUsage.remaining}</strong><small>/{tokenUsage.limit} token</small></span>
-            </button>}
             <button className="icon-button" title="Planları gör" aria-label="Planları gör" onClick={() => setShowPricing(true)}><span className="topbar-emoji" aria-hidden="true">💳</span></button>
             <button className="icon-button" title="İmza taleplerini takip et" aria-label="İmza taleplerini takip et" onClick={() => setShowSignatureRequests(true)}><span className="topbar-emoji" aria-hidden="true">✅</span></button>
             <button className="icon-button" title="İmza veya inceleme talebi oluştur" aria-label="İmza veya inceleme talebi oluştur" onClick={openSignatureRequest}><span className="topbar-emoji" aria-hidden="true">✍️</span></button>
