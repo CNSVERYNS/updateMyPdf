@@ -23,3 +23,7 @@ services:
         sync: false
       - key: FRONTEND_ORIGIN
         sync: false
+      - key: FRONTEND_ORIGINS
+        sync: false
+      - key: PUBLIC_APP_ORIGIN
+        sync: false
