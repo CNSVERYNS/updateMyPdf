@@ -1022,10 +1022,12 @@ app.post('/api/storage/upload', upload.single('file'), async (request, response)
   if (request.file.mimetype !== 'application/pdf') return response.status(400).json({ error: 'Yalnızca PDF yüklenebilir.' })
   try {
     const { admin, user } = await getSupabaseUser(request)
-    const path = `${user.id}/${Date.now()}-${safeFileName(request.file.originalname)}`
+    const requestedPath = String(request.body?.path || '').trim()
+    const canUpdateExisting = requestedPath.startsWith(`${user.id}/`) && requestedPath.length > user.id.length + 1
+    const path = canUpdateExisting ? requestedPath : `${user.id}/${Date.now()}-${safeFileName(request.file.originalname)}`
     const { error } = await admin.storage.from('pdfs').upload(path, request.file.buffer, {
       contentType: 'application/pdf',
-      upsert: false,
+      upsert: canUpdateExisting,
     })
     if (error) throw error
     const signed = await admin.storage.from('pdfs').createSignedUrl(path, 3600)

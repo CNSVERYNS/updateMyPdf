@@ -190,6 +190,8 @@ function App() {
   const [cloudFiles, setCloudFiles] = useState([])
   const [workspaceRequests, setWorkspaceRequests] = useState([])
   const [showCloudFiles, setShowCloudFiles] = useState(false)
+  const [currentCloudPath, setCurrentCloudPath] = useState('')
+  const [saveState, setSaveState] = useState('idle')
   const [tokenUsage, setTokenUsage] = useState(null)
   const [showTokenReloadNudge, setShowTokenReloadNudge] = useState(false)
   const [assistantQuestions, setAssistantQuestions] = useState([])
@@ -209,6 +211,7 @@ function App() {
   const chatEndRef = useRef(null)
   const restoredDocumentRef = useRef(false)
   const tokenReloadPromptedRef = useRef(false)
+  const autoSaveRequestRef = useRef(0)
 
   useEffect(() => {
     return () => {
@@ -236,6 +239,8 @@ function App() {
       setFile(restoredFile)
       setOriginalFile(restoredFile)
       setPdfTitle(cachedDocument.title || restoredFile.name)
+      setCurrentCloudPath(cachedDocument.cloudPath || '')
+      setSaveState(cachedDocument.cloudPath ? 'saved' : 'idle')
       setFileUrl(URL.createObjectURL(restoredFile))
       setPageCount(0)
       const infoFormData = new FormData()
@@ -260,6 +265,15 @@ function App() {
       listener.subscription.unsubscribe()
     }
   }, [])
+
+  useEffect(() => {
+    if (!session || !file || currentCloudPath) return undefined
+    let cancelled = false
+    uploadFileToCloud(file, '')
+      .then(() => { if (!cancelled) return loadCloudFiles() })
+      .catch((error) => { if (!cancelled) setToast({ tone: 'error', text: error.message || 'PDF otomatik kaydedilemedi.' }) })
+    return () => { cancelled = true }
+  }, [session, file, currentCloudPath])
 
   useEffect(() => {
     if (!session) {
@@ -437,6 +451,8 @@ function App() {
     setPdfTitle('')
     setCloudFiles([])
     setShowCloudFiles(false)
+    setCurrentCloudPath('')
+    setSaveState('idle')
     setShowAccount(false)
     setMessages(initialMessages)
     setAssistantProfile(null)
@@ -444,18 +460,36 @@ function App() {
     try { localStorage.removeItem(assistantPersistenceKey) } catch {}
   }
 
-  const uploadCurrentToCloud = async () => {
-    if (!file) throw new Error('Önce bir PDF yüklemelisin.')
+  const uploadFileToCloud = async (sourceFile, existingPath = '') => {
+    if (!sourceFile) throw new Error('Önce bir PDF yüklemelisin.')
     if (!session) {
       openAuthPrompt()
       throw new Error('Önce Cloud hesabına giriş yapmalısın.')
     }
+    const requestId = ++autoSaveRequestRef.current
+    setSaveState('saving')
     const formData = new FormData()
-    formData.append('file', file)
-    const result = await apiFetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: formData })
-    const data = await result.json().catch(() => ({}))
-    if (!result.ok) throw new Error(data.error || 'PDF cloud’a yüklenemedi.')
-    return data
+    formData.append('file', sourceFile)
+    if (existingPath) formData.append('path', existingPath)
+    try {
+      const result = await apiFetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: formData })
+      const data = await result.json().catch(() => ({}))
+      if (!result.ok) throw new Error(data.error || 'PDF cloud’a yüklenemedi.')
+      if (requestId === autoSaveRequestRef.current) {
+        setCurrentCloudPath(data.path || existingPath)
+        setSaveState('saved')
+      }
+      if (data.path) setCachedDocument((current) => current ? { ...current, cloudPath: data.path } : current)
+      return data
+    } catch (error) {
+      if (requestId === autoSaveRequestRef.current) setSaveState('error')
+      throw error
+    }
+  }
+
+  const uploadCurrentToCloud = async () => {
+    if (!file) throw new Error('Önce bir PDF yüklemelisin.')
+    return uploadFileToCloud(file, currentCloudPath)
   }
 
   const openSignatureRequest = () => {
@@ -540,6 +574,8 @@ function App() {
     const result = await fetch(cloudFile.signedUrl)
     const blob = await result.blob()
     setPdf(new File([blob], cloudFile.name, { type: 'application/pdf' }))
+    setCurrentCloudPath(cloudFile.path)
+    setSaveState('saved')
     setShowCloudFiles(false)
   }
 
@@ -594,6 +630,8 @@ function App() {
     setAssistantQuestions([])
     setAssistantProfile(null)
     setCachedDocument(null)
+    setCurrentCloudPath('')
+    setSaveState('idle')
   }
 
   const handleFileChange = (event) => {
@@ -761,11 +799,7 @@ function App() {
           assistantText += '\n\nPDF belgesini oluşturdum. İstersen şimdi düzenleyebilir, cloud’a kaydedebilir veya imzaya gönderebilirsin.'
           if (session) {
             try {
-              const cloudFormData = new FormData()
-              cloudFormData.append('file', generatedFile)
-              const cloudResponse = await apiFetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: cloudFormData })
-              const cloudData = await cloudResponse.json().catch(() => ({}))
-              if (!cloudResponse.ok) throw new Error(cloudData.error || 'Cloud kaydı başarısız oldu.')
+              await uploadFileToCloud(generatedFile, '')
               assistantText += '\n\nHesabına bağlı cloud alanına da kaydettim.'
               try { await loadCloudFiles() } catch { /* The upload itself succeeded; workspace refresh can retry. */ }
             } catch (cloudError) {
@@ -797,6 +831,7 @@ function App() {
       const firstAction = data.actions?.[0]
       const actionLabel = firstAction?.type ? firstAction.type.replaceAll('_', ' ') : 'AI planı'
       const editedFile = data.editedPdf ? decodePdfFile(data.editedPdf, file.name) : null
+      let cloudSaveWarning = ''
       if (editedFile) {
         if (fileUrl) URL.revokeObjectURL(fileUrl)
         setFile(editedFile)
@@ -810,6 +845,14 @@ function App() {
           .then((response) => response.ok ? response.json() : null)
           .then((info) => { if (info?.pageCount) { setPageCount(info.pageCount); setCurrentPage((current) => Math.min(current, info.pageCount)) }; if (info?.title) setPdfTitle(info.title) })
           .catch(() => {})
+        if (session) {
+          try {
+            await uploadFileToCloud(editedFile, currentCloudPath)
+            await loadCloudFiles()
+          } catch (error) {
+            cloudSaveWarning = ` PDF güncellendi ancak otomatik kaydedilemedi: ${error.message || 'daha sonra tekrar dene.'}`
+          }
+        }
       }
       if (imageFile) setImageFile(null)
       setAssistantQuestions([])
@@ -825,7 +868,7 @@ function App() {
       const officeNotice = officeExports.length ? `\nOffice çıktısı indirildi: ${officeExports.map((officeFile) => officeFile.fileName).join(', ')}` : ''
       const imageNotice = imageExports.length ? `\nGörsel çıktıları indirildi: ${imageExports.map((imageFileExport) => imageFileExport.fileName).join(', ')}` : ''
       const audioNotice = data.audioOverview?.data ? '\nAudio overview indirildi.' : ''
-      const warningText = `${data.warnings?.length ? ` ${data.warnings.join(' ')}` : ''}${analysisNotice}${officeNotice}${imageNotice}${audioNotice}`
+      const warningText = `${data.warnings?.length ? ` ${data.warnings.join(' ')}` : ''}${analysisNotice}${officeNotice}${imageNotice}${audioNotice}${cloudSaveWarning}`
       const ocrText = data.ocrPages?.length
         ? data.ocrPages.map((page) => `Sayfa ${page.page}: ${page.text || '(metin bulunamadı)'}`).join('\n')
         : ''
@@ -909,7 +952,7 @@ function App() {
         {session && file && <div className="document-name">
           <FileText size={15} />
           <span>{documentTitle}</span>
-          <span className="saved-state"><Check size={13} /> Saved</span>
+          <span className={`saved-state ${saveState === 'saving' ? 'saving' : saveState === 'error' ? 'error' : ''}`}>{saveState === 'saving' ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />} {saveState === 'saving' ? 'Saving...' : saveState === 'error' ? 'Save failed' : 'Saved'}</span>
         </div>}
 
         <div className="top-actions">
