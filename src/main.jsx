@@ -42,19 +42,40 @@ import { supabase, supabaseConfigured } from './supabase'
 import './styles.css'
 
 const apiBaseUrl = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
-const apiFetch = async (path, options = {}) => {
-  const result = await fetch(`${apiBaseUrl}${path}`, options)
-  if (result.status !== 401 || !supabase || !options.headers) return result
-  try {
-    const refreshed = await supabase.auth.refreshSession()
-    const nextSession = refreshed.data?.session
-    if (!nextSession) return result
-    const retryHeaders = new Headers(options.headers)
-    retryHeaders.set('Authorization', `Bearer ${nextSession.access_token}`)
-    return fetch(`${apiBaseUrl}${path}`, { ...options, headers: retryHeaders })
-  } catch {
-    return result
+let supabaseRefreshPromise = null
+const refreshSupabaseSession = async () => {
+  if (!supabase) return null
+  if (!supabaseRefreshPromise) {
+    supabaseRefreshPromise = supabase.auth.refreshSession()
+      .then(({ data, error }) => {
+        if (error) throw error
+        return data?.session || null
+      })
+      .catch(() => null)
+      .finally(() => { supabaseRefreshPromise = null })
   }
+  return supabaseRefreshPromise
+}
+const apiFetch = async (path, options = {}) => {
+  const requestHeaders = new Headers(options.headers || {})
+  const hasAuthorization = requestHeaders.has('Authorization')
+  let requestOptions = options
+  if (supabase && hasAuthorization) {
+    const current = await supabase.auth.getSession().then(({ data }) => data?.session || null).catch(() => null)
+    const expiresSoon = !current?.expires_at || current.expires_at * 1000 < Date.now() + 60_000
+    const nextSession = expiresSoon ? await refreshSupabaseSession() : current
+    if (nextSession?.access_token) {
+      requestHeaders.set('Authorization', `Bearer ${nextSession.access_token}`)
+      requestOptions = { ...options, headers: requestHeaders }
+    }
+  }
+  const result = await fetch(`${apiBaseUrl}${path}`, requestOptions)
+  if (result.status !== 401 || !supabase || !hasAuthorization) return result
+  const nextSession = await refreshSupabaseSession()
+  if (!nextSession?.access_token) return result
+  const retryHeaders = new Headers(requestOptions.headers || {})
+  retryHeaders.set('Authorization', `Bearer ${nextSession.access_token}`)
+  return fetch(`${apiBaseUrl}${path}`, { ...requestOptions, headers: retryHeaders })
 }
 
 const starterPrompts = [
