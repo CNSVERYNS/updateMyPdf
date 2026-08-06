@@ -1920,7 +1920,7 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
     content.push({ type: 'input_text', text: prompt })
     const commandInstructions = translationMode
       ? `You are a professional document translator inside a PDF editor. The user explicitly requested a complete translation into ${targetLanguageHint}.
-Translate every piece of prose on every page. Never summarize, shorten, paraphrase, omit sentences, omit paragraphs, or say that translation is unnecessary. Preserve names, numbers, dates, headings, labels, punctuation, and the order of the content. The source text is grouped by page and its line breaks represent the original visual layout. For each page, return exactly one translate action. The replacement must contain the COMPLETE translation of that page and must preserve the same line-break structure as the source as closely as possible. If a page is already partly in ${targetLanguageHint}, keep the existing target-language text but translate all other text. Never skip the final page. Return only the compact translation JSON schema fields; do not return explanations, summaries, or null fields.`
+Translate every piece of prose on every page. Never summarize, shorten, paraphrase, omit sentences, omit paragraphs, or say that translation is unnecessary. Preserve names, numbers, dates, headings, labels, punctuation, and the order of the content. Treat mixed-language text, Lorem Ipsum, pseudo-Latin, filler text, and placeholder prose as non-target content; do not leave it unchanged just because it is not normal modern prose. Translate or rewrite that content into coherent ${targetLanguageHint} while keeping its sentence and paragraph coverage. The source text is grouped by page and its line breaks represent the original visual layout. For each page, return exactly one translate action. The replacement must contain the COMPLETE translation of that page and must preserve the same line-break structure as the source as closely as possible. If a page is already partly in ${targetLanguageHint}, keep the existing target-language text but translate all other text. Never skip the final page. Return only the compact translation JSON schema fields; do not return explanations, summaries, or null fields.`
       : systemInstructions
     const planRequest = {
       model: translationMode ? translationModel() : pdfEditorModel(),
@@ -1959,14 +1959,25 @@ Translate every piece of prose on every page. Never summarize, shorten, paraphra
       .replace(/\s+/g, ' ')
       .trim()
       .toLocaleLowerCase('en-US')
+    const translationWordOverlap = (left, right) => {
+      const leftWords = new Set(comparableTranslationText(left).split(/[^\p{L}\p{N}]+/u).filter(Boolean))
+      const rightWords = new Set(comparableTranslationText(right).split(/[^\p{L}\p{N}]+/u).filter(Boolean))
+      if (!leftWords.size || !rightWords.size) return 0
+      let common = 0
+      for (const word of leftWords) if (rightWords.has(word)) common += 1
+      return common / Math.min(leftWords.size, rightWords.size)
+    }
     const translationPlanNeedsRetry = (candidate) => {
       if (!translationMode) return false
       const expectedPages = extractedTranslationPages.map((page) => page.page)
       const actions = Array.isArray(candidate.actions) ? candidate.actions.filter((action) => action?.type === 'translate' && String(action.text || '').trim() && String(action.replacement || '').trim()) : []
       const hasAllPages = !expectedPages.length || expectedPages.every((page) => actions.some((action) => action.page === page))
-      const hasUnchangedPage = extractedTranslationPages.some((page) => {
+      const hasLikelyUntranslatedPage = extractedTranslationPages.some((page) => {
         const action = actions.find((candidateAction) => candidateAction.page === page.page)
-        return action && comparableTranslationText(page.text) === comparableTranslationText(action.replacement)
+        if (!action) return false
+        const replacement = String(action.replacement || '')
+        return comparableTranslationText(page.text) === comparableTranslationText(replacement)
+          || (page.text.length > 240 && page.text.split(/\s+/).length > 25 && translationWordOverlap(page.text, replacement) > 0.88)
       })
       const isNoOp = !actions.length || actions.every((action) => {
         const page = extractedTranslationPages.find((candidatePage) => candidatePage.page === action.page)
@@ -1984,14 +1995,14 @@ Translate every piece of prose on every page. Never summarize, shorten, paraphra
         const sentenceStructureLost = sourceSentenceCount > 5 && replacementSentenceCount < Math.max(2, Math.floor(sourceSentenceCount * 0.45))
         return (page.text.length > 160 && replacement.length < page.text.length * 0.45) || lineStructureLost || sentenceStructureLost
       })
-      return !hasAllPages || hasUnchangedPage || isNoOp || isIncomplete
+      return !hasAllPages || hasLikelyUntranslatedPage || isNoOp || isIncomplete
     }
     if (translationPlanNeedsRetry(plan)) {
       const pagePlans = await Promise.all(extractedTranslationPages.map(async (page) => {
         const pageSource = (page.lines?.length ? page.lines : [page.text]).join('\n')
         const pageResult = await client.responses.create({
           ...planRequest,
-          instructions: `You are translating exactly one PDF page for a production document editor. Translate the complete source page into ${targetLanguageHint}. Never summarize, shorten, omit, or rewrite away content. Keep every heading, label, paragraph, sentence, name, number, date, and punctuation. Preserve the source line breaks and return the same number of non-empty lines whenever possible. Return exactly one translate action for page ${page.page}; its text must be the source page and its replacement must be the complete translation. Return no other action and no explanation.\n\nSOURCE PAGE ${page.page}:\n${pageSource}`,
+          instructions: `You are translating exactly one PDF page for a production document editor. Translate the complete source page into ${targetLanguageHint}. Never summarize, shorten, omit, or rewrite away content. Keep every heading, label, paragraph, sentence, name, number, date, and punctuation. Lorem Ipsum, pseudo-Latin, filler text, and mixed-language text are not already translated; convert them into coherent ${targetLanguageHint}. Preserve the source line breaks and return the same number of non-empty lines whenever possible. Return exactly one translate action for page ${page.page}; its text must be the source page and its replacement must be the complete translation. Return no other action and no explanation.\n\nSOURCE PAGE ${page.page}:\n${pageSource}`,
           input: [{
             role: 'user',
             content: [{ type: 'input_text', text: `Translate this complete page into ${targetLanguageHint}.\n\n${pageSource}` }],

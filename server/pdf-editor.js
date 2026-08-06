@@ -164,6 +164,10 @@ const translateTextBlock = async (pdfDocument, pagesWithText, action) => {
     const translatedLines = distributeTranslatedLines(action.replacement, sourceLines)
     for (const [index, sourceLine] of sourceLines.entries()) {
       const translatedLine = translatedLines[index] || ''
+      // Keep already-target-language lines untouched so their original color,
+      // font, weight, and size remain intact (for example an English heading
+      // inside an otherwise foreign-language page).
+      if (normalizeText(sourceLine.text) === normalizeText(translatedLine)) continue
       const left = Math.max(6, sourceLine.x - 2)
       const width = Math.max(24, Math.min(pageWidth - left - 6, sourceLine.right - sourceLine.x + 4))
       let fontSize = Math.max(5, Math.min(18, sourceLine.size))
