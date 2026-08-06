@@ -105,6 +105,68 @@ const underlineText = async (pdfDocument, pdfBytes, action) => {
   return matchCount
 }
 
+const wrapText = (text, font, size, maxWidth) => {
+  const words = String(text || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
+  if (!words.length) return []
+  const lines = []
+  let current = ''
+  for (const word of words) {
+    const candidate = current ? `${current} ${word}` : word
+    if (!current || font.widthOfTextAtSize(candidate, size) <= maxWidth) {
+      current = candidate
+    } else {
+      lines.push(current)
+      current = word
+    }
+  }
+  if (current) lines.push(current)
+  return lines
+}
+
+const translateTextBlock = async (pdfDocument, pagesWithText, action) => {
+  const selectedPages = action.page ? pagesWithText.filter((page) => page.pageNumber === action.page) : pagesWithText
+  const font = await getFont(pdfDocument, action)
+  let matchCount = 0
+
+  for (const pageData of selectedPages) {
+    const matches = matchingItems(pageData, action.text)
+    if (!matches.length) continue
+    const pdfPage = pdfDocument.getPages()[pageData.pageNumber - 1]
+    if (!pdfPage) continue
+    matchCount += matches.length
+
+    const pageWidth = pdfPage.getWidth()
+    const pageHeight = pdfPage.getHeight()
+    const left = Math.max(12, Math.min(...matches.map((match) => match.x + match.startRatio)) - 2)
+    const right = Math.min(pageWidth - 12, Math.max(...matches.map((match) => match.x + (match.endRatio || match.width))) + 2)
+    const bottom = Math.max(12, Math.min(...matches.map((match) => match.y - Math.max(2, match.height * 0.25))) - 2)
+    const top = Math.min(pageHeight - 12, Math.max(...matches.map((match) => match.y + Math.max(6, match.height))) + 2)
+    const width = Math.max(80, right - left)
+    const sourceSize = matches.reduce((sum, match) => sum + Math.max(6, match.height), 0) / matches.length
+    let fontSize = Math.max(6, Math.min(12, sourceSize))
+    let lineHeight = fontSize * 1.28
+    let lines = wrapText(action.replacement, font, fontSize, width)
+    const availableHeight = Math.max(lineHeight, top - bottom)
+
+    while (lines.length * lineHeight > availableHeight && fontSize > 5) {
+      fontSize = Math.max(5, fontSize - 0.5)
+      lineHeight = fontSize * 1.28
+      lines = wrapText(action.replacement, font, fontSize, width)
+    }
+
+    const coverHeight = Math.max(12, top - bottom)
+    pdfPage.drawRectangle({ x: Math.max(0, left - 3), y: Math.max(0, bottom - 3), width: Math.min(pageWidth - left + 3, width + 6), height: Math.min(pageHeight - bottom, coverHeight + 6), color: rgb(1, 1, 1), opacity: 1 })
+    let drawY = Math.min(pageHeight - fontSize - 6, top - fontSize)
+    for (const line of lines) {
+      if (drawY < 5) break
+      pdfPage.drawText(line, { x: left, y: drawY, size: fontSize, font, color: rgb(0.08, 0.08, 0.08) })
+      drawY -= lineHeight
+    }
+  }
+
+  return matchCount
+}
+
 const replaceText = async (pdfDocument, pdfBytes, action, cachedPages = null, cachedFont = null) => {
   const pagesWithText = cachedPages || await getTextItems(pdfBytes)
   const selectedPages = action.page ? pagesWithText.filter((page) => page.pageNumber === action.page) : pagesWithText
@@ -806,7 +868,9 @@ export async function applyEditPlan(pdfBuffer, actions = [], assets = {}) {
   const replacementActions = actions.filter((item) => ['replace_text', 'rewrite_text', 'translate'].includes(item.type) && item.text && item.replacement !== null)
   const replacementPages = replacementActions.length ? await getTextItems(originalBytes) : null
   for (const action of replacementActions) {
-    const matchCount = await replaceText(pdfDocument, originalBytes, action, replacementPages)
+    const matchCount = action.type === 'translate'
+      ? await translateTextBlock(pdfDocument, replacementPages, action)
+      : await replaceText(pdfDocument, originalBytes, action, replacementPages)
     appliedActions.push({ type: action.type, page: action.page, text: action.text, replacement: action.replacement, applied: matchCount > 0, matchCount })
     if (!matchCount) warnings.push(`Değiştirilecek metin bulunamadı: “${action.text}”`)
   }
