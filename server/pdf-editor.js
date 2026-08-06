@@ -196,6 +196,22 @@ const translateTextBlock = async (pdfDocument, pagesWithText, action) => {
   return matchCount
 }
 
+const translateImageText = async (pdfDocument, action) => {
+  const pageIndex = Number.isInteger(action.page) && action.page > 0 ? action.page - 1 : 0
+  const page = pdfDocument.getPages()[pageIndex]
+  if (!page || !String(action.replacement || '').trim()) return false
+  const font = await getFont(pdfDocument, action)
+  const left = Math.max(0, Number(action.x) || 0)
+  const bottom = Math.max(0, Number(action.y) || 0)
+  const width = Math.max(12, Math.min(page.getWidth() - left, Number(action.width) || 120))
+  const height = Math.max(8, Number(action.height) || 12)
+  let fontSize = Math.max(6, Math.min(18, Number(action.size) || height))
+  while (font.widthOfTextAtSize(String(action.replacement), fontSize) > width && fontSize > 5) fontSize = Math.max(5, fontSize - 0.5)
+  page.drawRectangle({ x: left, y: bottom, width, height: Math.max(10, height * 1.45), color: rgb(1, 1, 1), opacity: 0.96 })
+  page.drawText(String(action.replacement), { x: left + 1, y: bottom + Math.max(0, height * 0.08), size: fontSize, font, color: rgb(0.08, 0.08, 0.08) })
+  return true
+}
+
 const replaceText = async (pdfDocument, pdfBytes, action, cachedPages = null, cachedFont = null) => {
   const pagesWithText = cachedPages || await getTextItems(pdfBytes)
   const selectedPages = action.page ? pagesWithText.filter((page) => page.pageNumber === action.page) : pagesWithText
@@ -902,6 +918,12 @@ export async function applyEditPlan(pdfBuffer, actions = [], assets = {}) {
       : await replaceText(pdfDocument, originalBytes, action, replacementPages)
     appliedActions.push({ type: action.type, page: action.page, text: action.text, replacement: action.replacement, applied: matchCount > 0, matchCount })
     if (!matchCount) warnings.push(`Değiştirilecek metin bulunamadı: “${action.text}”`)
+  }
+
+  for (const action of actions.filter((item) => item.type === 'translate_image_text' && item.replacement)) {
+    const applied = await translateImageText(pdfDocument, action)
+    appliedActions.push({ type: action.type, page: action.page, text: action.text, replacement: action.replacement, applied })
+    if (!applied) warnings.push(`Görseldeki metin çevrilemedi: “${action.text || ''}”`)
   }
 
   for (const action of actions.filter((item) => item.type === 'style_text' && item.text && item.color)) {

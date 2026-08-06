@@ -1077,9 +1077,9 @@ function App() {
 
         <div className="top-actions">
           {session ? <>
-            {tokenUsage && <button className={`token-balance ${tokenUsage.low ? 'low' : ''}`} title={`${tokenUsage.planName} planı · ${tokenUsage.remaining} / ${tokenUsage.limit} AI tokenı kaldı`} onClick={() => tokenUsage.low ? setShowTokenReloadNudge(true) : setShowAccount(true)}>
+            {tokenUsage && <button className={`token-balance ${tokenUsage.low ? 'low' : ''}`} title={`${tokenUsage.planName} planı · ${tokenUsage.remaining} AI tokenı kaldı`} onClick={() => tokenUsage.low ? setShowTokenReloadNudge(true) : setShowAccount(true)}>
               <span className="token-balance-icon" aria-hidden="true">⚡</span>
-              <span><strong>{tokenUsage.remaining}</strong><small>/{tokenUsage.limit} token</small></span>
+              <span><strong>{tokenUsage.remaining}</strong><small>token kaldı</small></span>
             </button>}
             <span className="history-button-wrap">
               <button className="icon-button" title="Bildirimleri göster" aria-label="Bildirimleri göster" onClick={() => setShowHistory((value) => !value)}>
@@ -2021,7 +2021,7 @@ function TokenReloadNudge({ usage, onClose, onOpenPricing }) {
         <span className="token-reload-eyebrow">AI TOKEN BAKİYESİ</span>
         <h2>Tokenlarını yenileme zamanı</h2>
         <p>{usage.planName} planında kalan AI tokenın %20’nin altına indi. İşlerine ara vermemek için yenileme paketini şimdi inceleyebilirsin.</p>
-        <div className="token-reload-summary"><strong>{usage.remaining}</strong><span>/ {usage.limit} token kaldı</span></div>
+        <div className="token-reload-summary"><strong>{usage.remaining}</strong><span>token kaldı</span></div>
         <div className="token-reload-offer"><span>Önerilen yenileme</span><strong>+{usage.reloadTokens} token · ${usage.reloadPrice}</strong></div>
         <div className="token-reload-actions"><button type="button" className="auth-submit" onClick={onOpenPricing}>Yenileme seçeneklerini gör</button><button type="button" className="auth-switch" onClick={onClose}>Daha sonra</button></div>
         <small>Ödeme bağlantısı Stripe entegrasyonu aktif olduğunda kullanılabilir olacak.</small>
