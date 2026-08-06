@@ -9,17 +9,6 @@ const normalizeText = (value) => String(value || '')
   .trim()
   .toLocaleLowerCase('tr-TR')
 
-const imageOperatorCodes = new Set([
-  pdfjsLib.OPS.paintImageMaskXObject,
-  pdfjsLib.OPS.paintImageMaskXObjectGroup,
-  pdfjsLib.OPS.paintImageXObject,
-  pdfjsLib.OPS.paintInlineImageXObject,
-  pdfjsLib.OPS.paintInlineImageXObjectGroup,
-  pdfjsLib.OPS.paintImageXObjectRepeat,
-  pdfjsLib.OPS.paintImageMaskXObjectRepeat,
-  pdfjsLib.OPS.paintSolidColorImageMask,
-])
-
 const getMatches = (items, target) => {
   const normalizedTarget = normalizeText(target)
   if (!normalizedTarget) return []
@@ -60,7 +49,6 @@ export async function renderPdfPages(pdfBytes, scale = 1.5, onPage) {
       const context = canvas.getContext('2d')
       await page.render({ canvasContext: context, viewport }).promise
       const content = await page.getTextContent()
-      const operatorList = await page.getOperatorList()
       const renderedPage = {
         page: pageNumber,
         width: viewport.width / scale,
@@ -68,7 +56,6 @@ export async function renderPdfPages(pdfBytes, scale = 1.5, onPage) {
         scale,
         png: canvas.toBuffer('image/png'),
         items: content.items.filter((item) => typeof item.str === 'string' && item.str.trim()),
-        hasImages: operatorList.fnArray.some((operator) => imageOperatorCodes.has(operator)),
         canvas,
         context,
       }
@@ -124,81 +111,6 @@ export async function ocrPdfBuffer(pdfBytes, language = 'eng') {
     for (const page of pages) {
       const result = await worker.recognize(page.png)
       recognizedPages.push({ page: page.page, text: result.data.text.trim() })
-    }
-  } finally {
-    await worker.terminate()
-  }
-  return recognizedPages
-}
-
-const groupOcrWords = (words, scale, pageHeight) => {
-  const groups = []
-  for (const word of words || []) {
-    const text = String(word?.text || '').replace(/\s+/g, ' ').trim()
-    const confidence = Number(word?.confidence)
-    const bbox = word?.bbox || {}
-    if (!text || (Number.isFinite(confidence) && confidence < 42) || !Number.isFinite(bbox.x0) || !Number.isFinite(bbox.y0)) continue
-    const x = bbox.x0 / scale
-    const top = bbox.y0 / scale
-    const width = Math.max(2, (Number(bbox.x1) - bbox.x0) / scale)
-    const height = Math.max(4, (Number(bbox.y1) - bbox.y0) / scale)
-    const center = top + height / 2
-    let group = groups.find((candidate) => Math.abs(candidate.center - center) <= Math.max(5, height * 0.65))
-    if (!group) {
-      group = { center, words: [] }
-      groups.push(group)
-    }
-    group.words.push({ text, x, top, width, height })
-    group.center = (group.center + center) / 2
-  }
-  return groups
-    .sort((left, right) => left.center - right.center)
-    .map((group) => {
-      const wordsInLine = group.words.sort((left, right) => left.x - right.x)
-      const left = Math.min(...wordsInLine.map((word) => word.x))
-      const right = Math.max(...wordsInLine.map((word) => word.x + word.width))
-      const top = Math.min(...wordsInLine.map((word) => word.top))
-      const bottom = Math.max(...wordsInLine.map((word) => word.top + word.height))
-      return {
-        text: wordsInLine.map((word) => word.text).join(' ').replace(/\s+/g, ' ').trim(),
-        x: left,
-        y: pageHeight - bottom,
-        width: Math.max(4, right - left),
-        height: Math.max(4, bottom - top),
-        size: Math.max(5, bottom - top),
-      }
-    })
-    .filter((line) => line.text)
-}
-
-const wordOverlap = (left, right) => {
-  const leftWords = new Set(normalizeText(left).split(/[^\p{L}\p{N}]+/u).filter(Boolean))
-  const rightWords = new Set(normalizeText(right).split(/[^\p{L}\p{N}]+/u).filter(Boolean))
-  if (!leftWords.size || !rightWords.size) return 0
-  let common = 0
-  for (const word of leftWords) if (rightWords.has(word)) common += 1
-  return common / Math.min(leftWords.size, rightWords.size)
-}
-
-export async function ocrImageText(pdfBytes, language = 'spa+eng') {
-  const pages = await renderPdfPages(pdfBytes, 1.5)
-  const imagePages = pages.filter((page) => page.hasImages)
-  if (!imagePages.length) return []
-  const worker = await createWorker(language)
-  const recognizedPages = []
-  try {
-    for (const page of imagePages) {
-      const result = await worker.recognize(page.png, {}, { blocks: true })
-      const words = (result.data?.blocks || []).flatMap((block) => (block.paragraphs || []).flatMap((paragraph) => (paragraph.lines || []).flatMap((line) => line.words || [])))
-      const lines = groupOcrWords(words, page.scale, page.height)
-      const pageText = page.items.map((item) => item.str).join(' ')
-      const uniqueLines = lines.filter((line) => {
-        const normalizedLine = normalizeText(line.text)
-        if (!normalizedLine) return false
-        if (normalizeText(pageText).includes(normalizedLine)) return false
-        return wordOverlap(pageText, line.text) < 0.82
-      })
-      if (uniqueLines.length) recognizedPages.push({ page: page.page, lines: uniqueLines })
     }
   } finally {
     await worker.terminate()

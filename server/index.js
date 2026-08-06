@@ -16,7 +16,7 @@ import { applyEditPlan } from './pdf-editor.js'
 import { getCapabilitySummary } from './capabilities.js'
 import { getEmailStatus, sendResendEmail } from './email.js'
 import { comparePdfBuffers, extractTextPages } from './pdf-text.js'
-import { ocrImageText, ocrPdfBuffer, renderPdfPages } from './pdf-render.js'
+import { ocrPdfBuffer, renderPdfPages } from './pdf-render.js'
 import { getExternalToolStatus, getGhostscriptResources, runExternalTool, withTempDirectory } from './external-tools.js'
 
 const app = express()
@@ -882,26 +882,6 @@ const translationPlanSchema = {
     },
   },
   required: ['assistantMessage', 'summary', 'actions'],
-}
-
-const imageTranslationPlanSchema = {
-  type: 'object',
-  additionalProperties: false,
-  properties: {
-    actions: {
-      type: 'array',
-      items: {
-        type: 'object',
-        additionalProperties: false,
-        properties: {
-          line: { type: 'integer' },
-          replacement: { type: 'string' },
-        },
-        required: ['line', 'replacement'],
-      },
-    },
-  },
-  required: ['actions'],
 }
 
 const documentAssistantSchema = {
@@ -1912,7 +1892,6 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
     const targetLanguageHint = /(?:ingilizce|english)/i.test(prompt) ? 'English' : /(?:türkçe|turkish|turkce)/i.test(prompt) ? 'Turkish' : /(?:ispanyolca|spanish|español)/i.test(prompt) ? 'Spanish' : 'the language explicitly requested by the user'
     let extractedTranslationText = ''
     let extractedTranslationPages = []
-    let extractedImageTextPages = []
     if (translationMode) {
       const extractedPages = await extractTextPages(sourceFile.buffer)
       extractedTranslationPages = extractedPages.filter((page) => page.text)
@@ -1920,11 +1899,6 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
         .map((page) => `[Page ${page.page}]\n${(page.lines?.length ? page.lines : [page.text]).join('\n')}`)
         .join('\n\n')
         .slice(0, 120000)
-      try {
-        extractedImageTextPages = await ocrImageText(sourceFile.buffer, 'spa+eng')
-      } catch (ocrError) {
-        console.error('[translation-image-ocr]', ocrError?.message || ocrError)
-      }
     }
     const content = []
     if (translationMode && extractedTranslationText) {
@@ -2066,55 +2040,6 @@ Automatically identify the source language from the extracted PDF text; the user
       }
     }
     if (translationPlanNeedsRetry(plan)) throw new Error('Tam çeviri planı eksik döndü; belge değiştirilmedi. Lütfen aynı isteği tekrar dene.')
-    if (translationMode && extractedImageTextPages.length) {
-      const imageActions = []
-      let nextImagePageIndex = 0
-      const translateImagePage = async (imagePage) => {
-        const sourceLines = imagePage.lines.map((line, index) => `${index + 1}. ${line.text}`).join('\n')
-        const imageResult = await client.responses.create({
-          model: translationModel(),
-          instructions: `You are translating text detected inside PDF images. Automatically identify the source language. Translate every OCR line into ${targetLanguageHint}. Keep names, numbers, dates, labels, and order. Do not summarize or skip a line. If OCR contains minor recognition noise, correct it while preserving the visible meaning. Return exactly one action for every numbered line, using the same line number and only the translated replacement text. Do not return explanations.\n\nIMAGE TEXT LINES FROM PAGE ${imagePage.page}:\n${sourceLines}`,
-          input: [{
-            role: 'user',
-            content: [{ type: 'input_text', text: `Translate these image text lines into ${targetLanguageHint}.\n\n${sourceLines}` }],
-          }],
-          text: { format: { type: 'json_schema', name: 'pdf_image_translation_plan', strict: true, schema: imageTranslationPlanSchema } },
-          max_output_tokens: 8000,
-          reasoning: { effort: 'medium' },
-        }, { timeout: 180000 })
-        if (!imageResult.output_text?.trim()) return []
-        const parsed = JSON.parse(imageResult.output_text)
-        const actionsByLine = new Map((Array.isArray(parsed.actions) ? parsed.actions : []).filter((action) => Number.isInteger(action.line) && String(action.replacement || '').trim()).map((action) => [action.line, action]))
-        return imagePage.lines.map((line, index) => {
-          const translated = actionsByLine.get(index + 1)?.replacement
-          if (!translated || comparableTranslationText(line.text) === comparableTranslationText(translated)) return null
-          return {
-            type: 'translate_image_text',
-            page: imagePage.page,
-            line: index + 1,
-            text: line.text,
-            replacement: String(translated).replace(/\s+/g, ' ').trim(),
-            x: line.x,
-            y: line.y,
-            width: line.width,
-            height: line.height,
-            size: line.size,
-          }
-        }).filter(Boolean)
-      }
-      const imageWorkerCount = Math.min(3, extractedImageTextPages.length)
-      const imagePageResults = await Promise.all(Array.from({ length: imageWorkerCount }, async () => {
-        const results = []
-        while (true) {
-          const pageIndex = nextImagePageIndex
-          nextImagePageIndex += 1
-          if (pageIndex >= extractedImageTextPages.length) return results
-          results.push(...await translateImagePage(extractedImageTextPages[pageIndex]))
-        }
-      }))
-      imagePageResults.flat().forEach((action) => imageActions.push(action))
-      plan.actions = [...plan.actions, ...imageActions]
-    }
     const removePasswordAction = plan.actions.find((action) => action.type === 'remove_password')
     const executorActions = removePasswordAction ? plan.actions.filter((action) => action.type !== 'remove_password') : plan.actions
     const editableSource = removePasswordAction ? await decryptPdfBuffer(sourceFile.buffer, removePasswordAction.password || '') : sourceFile.buffer

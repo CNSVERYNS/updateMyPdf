@@ -107,6 +107,13 @@ const underlineText = async (pdfDocument, pdfBytes, action) => {
   return matchCount
 }
 
+const normalizeFontFamily = (value) => {
+  const family = String(value || '').toLocaleLowerCase('en-US')
+  if (/mono|courier|consolas|monaco/.test(family)) return 'courier'
+  if (/serif|times|georgia|garamond|cambria/.test(family)) return 'times'
+  return 'helvetica'
+}
+
 const groupMatchedTextLines = (matches) => {
   const groups = []
   for (const item of matches) {
@@ -125,9 +132,10 @@ const groupMatchedTextLines = (matches) => {
       const items = group.items.sort((left, right) => left.x - right.x)
       const left = Math.min(...items.map((item) => item.x + (Number.isFinite(item.startRatio) ? item.startRatio : 0)))
       const right = Math.max(...items.map((item) => item.x + (Number.isFinite(item.endRatio) ? item.endRatio : item.width)))
-      const height = Math.max(...items.map((item) => Math.max(6, item.height || 10)))
+      const height = Math.max(...items.map((item) => Math.max(1, item.height || 10)))
       const text = items.map((item) => item.text).join(' ').replace(/\s+/g, ' ').trim()
       const fontDescriptor = items.map((item) => `${item.fontName} ${item.fontFamily}`).join(' ')
+      const sourceFamily = items.map((item) => item.fontFamily).find(Boolean)
       const letters = text.replace(/[^\p{L}]+/gu, '')
       const uppercaseHeading = letters.length >= 3 && letters === letters.toLocaleUpperCase('en-US') && text.length <= 140
       return {
@@ -137,6 +145,7 @@ const groupMatchedTextLines = (matches) => {
         y: Math.max(...items.map((item) => item.y)),
         height,
         size: height,
+        fontFamily: normalizeFontFamily(sourceFamily),
         fontWeight: /bold|black|heavy|semibold|demi/i.test(fontDescriptor) || uppercaseHeading ? 'bold' : 'normal',
         fontStyle: /italic|oblique/i.test(fontDescriptor) ? 'italic' : 'normal',
       }
@@ -182,12 +191,15 @@ const translateTextBlock = async (pdfDocument, pagesWithText, action) => {
       // font, weight, and size remain intact (for example an English heading
       // inside an otherwise foreign-language page).
       if (normalizeText(sourceLine.text) === normalizeText(translatedLine)) continue
-      const font = await getFont(pdfDocument, { ...action, fontWeight: sourceLine.fontWeight, fontStyle: sourceLine.fontStyle })
+      const font = await getFont(pdfDocument, {
+        ...action,
+        fontFamily: sourceLine.fontFamily,
+        fontWeight: sourceLine.fontWeight,
+        fontStyle: sourceLine.fontStyle,
+      })
       const left = Math.max(6, sourceLine.x - 2)
       const width = Math.max(24, Math.min(pageWidth - left - 6, sourceLine.right - sourceLine.x + 4))
-      const minimumReadableSize = sourceLine.size >= 15 ? 9 : sourceLine.size >= 10 ? 7.5 : 5.5
-      let fontSize = Math.max(minimumReadableSize, Math.min(18, sourceLine.size))
-      while (font.widthOfTextAtSize(translatedLine, fontSize) > width && fontSize > minimumReadableSize) fontSize = Math.max(minimumReadableSize, fontSize - 0.5)
+      const fontSize = Math.max(1, sourceLine.size)
       pdfPage.drawRectangle({ x: left, y: Math.max(0, sourceLine.y - sourceLine.height * 0.35 - 2), width, height: Math.max(10, sourceLine.height * 1.45), color: rgb(1, 1, 1), opacity: 1 })
       if (translatedLine) pdfPage.drawText(translatedLine, { x: left + 1, y: sourceLine.y, size: fontSize, font, color: rgb(0.08, 0.08, 0.08) })
     }
@@ -196,26 +208,9 @@ const translateTextBlock = async (pdfDocument, pagesWithText, action) => {
   return matchCount
 }
 
-const translateImageText = async (pdfDocument, action) => {
-  const pageIndex = Number.isInteger(action.page) && action.page > 0 ? action.page - 1 : 0
-  const page = pdfDocument.getPages()[pageIndex]
-  if (!page || !String(action.replacement || '').trim()) return false
-  const font = await getFont(pdfDocument, action)
-  const left = Math.max(0, Number(action.x) || 0)
-  const bottom = Math.max(0, Number(action.y) || 0)
-  const width = Math.max(12, Math.min(page.getWidth() - left, Number(action.width) || 120))
-  const height = Math.max(8, Number(action.height) || 12)
-  let fontSize = Math.max(6, Math.min(18, Number(action.size) || height))
-  while (font.widthOfTextAtSize(String(action.replacement), fontSize) > width && fontSize > 5) fontSize = Math.max(5, fontSize - 0.5)
-  page.drawRectangle({ x: left, y: bottom, width, height: Math.max(10, height * 1.45), color: rgb(1, 1, 1), opacity: 0.96 })
-  page.drawText(String(action.replacement), { x: left + 1, y: bottom + Math.max(0, height * 0.08), size: fontSize, font, color: rgb(0.08, 0.08, 0.08) })
-  return true
-}
-
 const replaceText = async (pdfDocument, pdfBytes, action, cachedPages = null, cachedFont = null) => {
   const pagesWithText = cachedPages || await getTextItems(pdfBytes)
   const selectedPages = action.page ? pagesWithText.filter((page) => page.pageNumber === action.page) : pagesWithText
-  const font = cachedFont || await getFont(pdfDocument, action)
   let matchCount = 0
 
   for (const pageData of selectedPages) {
@@ -226,9 +221,16 @@ const replaceText = async (pdfDocument, pdfBytes, action, cachedPages = null, ca
     matchCount += matches.length
 
     for (const match of matches) {
+      const sourceDescriptor = `${match.fontName || ''} ${match.fontFamily || ''}`
+      const font = cachedFont || await getFont(pdfDocument, {
+        ...action,
+        fontFamily: action.fontFamily || normalizeFontFamily(match.fontFamily),
+        fontWeight: action.fontWeight || (/bold|black|heavy|semibold|demi/i.test(sourceDescriptor) ? 'bold' : 'normal'),
+        fontStyle: action.fontStyle || (/italic|oblique/i.test(sourceDescriptor) ? 'italic' : 'normal'),
+      })
       const startX = match.x + match.startRatio
       const endX = match.x + (match.endRatio || match.width)
-      const fontSize = Math.max(6, match.height)
+      const fontSize = Math.max(1, match.height)
       const coverHeight = Math.max(fontSize * 1.35, 9)
       const coverY = Math.max(0, match.y - fontSize * 0.28)
       pdfPage.drawRectangle({
@@ -273,20 +275,31 @@ const embedCachedFont = (pdfDocument, key, bytes) => {
 
 const getFont = async (pdfDocument, action = {}) => {
   const actionText = `${String(action.text || '')} ${String(action.replacement || '')}`
+  const family = action.fontFamily || 'helvetica'
+  const weight = action.fontWeight || 'normal'
+  const style = action.fontStyle || 'normal'
   if (/[^\x00-\x7F]/.test(actionText)) {
-    const fontPath = action.fontWeight === 'bold'
-      ? (action.fontStyle === 'italic' ? 'C:\\Windows\\Fonts\\segoeubz.ttf' : 'C:\\Windows\\Fonts\\segoeuib.ttf')
-      : (action.fontStyle === 'italic' ? 'C:\\Windows\\Fonts\\segoeuii.ttf' : 'C:\\Windows\\Fonts\\segoeui.ttf')
-    const candidates = [fontPath, '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf']
+    const windowsFonts = {
+      helvetica: { normal: { normal: 'C:\\Windows\\Fonts\\segoeui.ttf', italic: 'C:\\Windows\\Fonts\\segoeuii.ttf' }, bold: { normal: 'C:\\Windows\\Fonts\\segoeuib.ttf', italic: 'C:\\Windows\\Fonts\\segoeubz.ttf' } },
+      times: { normal: { normal: 'C:\\Windows\\Fonts\\times.ttf', italic: 'C:\\Windows\\Fonts\\timesi.ttf' }, bold: { normal: 'C:\\Windows\\Fonts\\timesbd.ttf', italic: 'C:\\Windows\\Fonts\\timesbi.ttf' } },
+      courier: { normal: { normal: 'C:\\Windows\\Fonts\\cour.ttf', italic: 'C:\\Windows\\Fonts\\couri.ttf' }, bold: { normal: 'C:\\Windows\\Fonts\\courbd.ttf', italic: 'C:\\Windows\\Fonts\\courbi.ttf' } },
+    }
+    const linuxFonts = {
+      helvetica: { normal: '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', bold: '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', italic: '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf', boldItalic: '/usr/share/fonts/truetype/dejavu/DejaVuSans-BoldOblique.ttf' },
+      times: { normal: '/usr/share/fonts/truetype/dejavu/DejaVuSerif.ttf', bold: '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf', italic: '/usr/share/fonts/truetype/dejavu/DejaVuSerif-Italic.ttf', boldItalic: '/usr/share/fonts/truetype/dejavu/DejaVuSerif-BoldItalic.ttf' },
+      courier: { normal: '/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf', bold: '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf', italic: '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Oblique.ttf', boldItalic: '/usr/share/fonts/truetype/dejavu/DejaVuSansMono-BoldOblique.ttf' },
+    }
+    const normalizedWeight = weight === 'bold' ? 'bold' : 'normal'
+    const normalizedStyle = style === 'italic' ? 'italic' : 'normal'
+    const linuxFamily = linuxFonts[family] || linuxFonts.helvetica
+    const linuxKey = normalizedWeight === 'bold' && normalizedStyle === 'italic' ? 'boldItalic' : normalizedWeight === 'bold' ? 'bold' : normalizedStyle === 'italic' ? 'italic' : 'normal'
+    const candidates = [windowsFonts[family]?.[normalizedWeight]?.[normalizedStyle], linuxFamily[linuxKey]]
     const resolved = candidates.find((candidate) => existsSync(candidate))
     if (resolved) {
       pdfDocument.registerFontkit(fontkit)
       return embedCachedFont(pdfDocument, resolved, readFileSync(resolved))
     }
   }
-  const family = action.fontFamily || 'helvetica'
-  const weight = action.fontWeight || 'normal'
-  const style = action.fontStyle || 'normal'
   const fontMap = {
     helvetica: {
       normal: { normal: StandardFonts.Helvetica, italic: StandardFonts.HelveticaOblique },
@@ -918,12 +931,6 @@ export async function applyEditPlan(pdfBuffer, actions = [], assets = {}) {
       : await replaceText(pdfDocument, originalBytes, action, replacementPages)
     appliedActions.push({ type: action.type, page: action.page, text: action.text, replacement: action.replacement, applied: matchCount > 0, matchCount })
     if (!matchCount) warnings.push(`Değiştirilecek metin bulunamadı: “${action.text}”`)
-  }
-
-  for (const action of actions.filter((item) => item.type === 'translate_image_text' && item.replacement)) {
-    const applied = await translateImageText(pdfDocument, action)
-    appliedActions.push({ type: action.type, page: action.page, text: action.text, replacement: action.replacement, applied })
-    if (!applied) warnings.push(`Görseldeki metin çevrilemedi: “${action.text || ''}”`)
   }
 
   for (const action of actions.filter((item) => item.type === 'style_text' && item.text && item.color)) {
