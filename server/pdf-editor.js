@@ -293,11 +293,25 @@ const getFont = async (pdfDocument, action = {}) => {
     const normalizedStyle = style === 'italic' ? 'italic' : 'normal'
     const linuxFamily = linuxFonts[family] || linuxFonts.helvetica
     const linuxKey = normalizedWeight === 'bold' && normalizedStyle === 'italic' ? 'boldItalic' : normalizedWeight === 'bold' ? 'bold' : normalizedStyle === 'italic' ? 'italic' : 'normal'
-    const candidates = [windowsFonts[family]?.[normalizedWeight]?.[normalizedStyle], linuxFamily[linuxKey]]
-    const resolved = candidates.find((candidate) => existsSync(candidate))
-    if (resolved) {
-      pdfDocument.registerFontkit(fontkit)
-      return embedCachedFont(pdfDocument, resolved, readFileSync(resolved))
+    const unicodeFallbacks = [
+      'C:\\Windows\\Fonts\\malgun.ttf',
+      'C:\\Windows\\Fonts\\meiryo.ttc',
+      'C:\\Windows\\Fonts\\msyh.ttc',
+      'C:\\Windows\\Fonts\\seguisym.ttf',
+      '/usr/share/fonts/truetype/noto/NotoSans-Regular.ttf',
+      '/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc',
+      '/usr/share/fonts/opentype/noto/NotoSans-Regular.ttf',
+      '/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc',
+      '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf',
+    ]
+    const candidates = [windowsFonts[family]?.[normalizedWeight]?.[normalizedStyle], linuxFamily[linuxKey], ...unicodeFallbacks]
+    for (const candidate of candidates.filter((item) => item && existsSync(item))) {
+      try {
+        pdfDocument.registerFontkit(fontkit)
+        return embedCachedFont(pdfDocument, candidate, readFileSync(candidate))
+      } catch {
+        // Try the next Unicode-capable system font before falling back to a standard PDF font.
+      }
     }
   }
   const fontMap = {
@@ -994,7 +1008,7 @@ export async function applyEditPlan(pdfBuffer, actions = [], assets = {}) {
   for (const action of actions.filter((item) => item.type === 'set_alt_text' && item.text)) {
     const tagged = setImageAltText(pdfDocument, action)
     appliedActions.push({ type: action.type, page: action.page || 1, imageIndex: action.imageIndex || 1, applied: tagged > 0, matchCount: tagged })
-    if (!tagged) warnings.push('Alt metni eklenecek gÃ¶mÃ¼lÃ¼ gÃ¶rsel bulunamadÄ±.')
+    if (!tagged) warnings.push('Alt metni eklenecek g\u00f6m\u00fcl\u00fc g\u00f6rsel bulunamad\u0131.')
   }
 
   for (const action of actions.filter((item) => item.type === 'add_link' && item.url)) {

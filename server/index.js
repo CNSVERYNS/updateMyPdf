@@ -1145,13 +1145,13 @@ app.post('/api/storage/share', async (request, response) => {
   const expiresIn = Math.min(Math.max(Number.isFinite(requestedExpiry) ? requestedExpiry : 86400, 300), 604800)
   try {
     const { admin, user } = await getSupabaseUser(request)
-    if (!path.startsWith(`${user.id}/`)) return response.status(403).json({ error: 'Bu dosyaya eriÅŸim iznin yok.' })
+    if (!path.startsWith(`${user.id}/`)) return response.status(403).json({ error: 'Bu dosyaya eri\u015fim iznin yok.' })
     const signed = await admin.storage.from('pdfs').createSignedUrl(path, expiresIn)
     if (signed.error || !signed.data?.signedUrl) throw signed.error || new Error('Signed URL could not be created.')
     response.json({ path, signedUrl: signed.data.signedUrl, expiresIn })
   } catch (error) {
     console.error('[storage-share]', error?.message || error)
-    response.status(error?.status || 500).json({ error: error?.status === 401 ? error.message : 'PaylaÅŸÄ±m baÄŸlantÄ±sÄ± oluÅŸturulamadÄ±.' })
+    response.status(error?.status || 500).json({ error: error?.status === 401 ? error.message : 'Payla\u015f\u0131m ba\u011flant\u0131s\u0131 olu\u015fturulamad\u0131.' })
   }
 })
 
@@ -1815,24 +1815,38 @@ const pruneAiCommandJobs = () => {
 const formatAiCommandError = (error) => {
   console.error('[ai-command]', error?.message || error)
   const timedOut = error?.name === 'APIConnectionTimeoutError' || error?.name === 'AbortError' || error?.code === 'ETIMEDOUT'
-  const status = error?.status === 401 ? 401 : error?.status === 402 ? 402 : timedOut ? 504 : 500
-  return {
-    status,
-    error: status === 401
-      ? 'OpenAI API anahtarÄ± geÃ§ersiz veya yetkisiz.'
-      : status === 402
-        ? error.message
+  const rootError = error?.cause || error
+  const rawStatus = Number(rootError?.status || rootError?.statusCode || rootError?.response?.status || error?.status || 0)
+  const rateLimited = rawStatus === 429 || rootError?.code === 'rate_limit_exceeded' || /rate.?limit|too many requests/i.test(String(rootError?.message || ''))
+  const status = rawStatus >= 400 && rawStatus < 600 ? rawStatus : timedOut ? 504 : 500
+  const pageMatch = String(error?.message || '').match(/page\s+(\d+)/i)
+  const pageSuffix = pageMatch ? ` (sayfa ${pageMatch[1]})` : ''
+  const userError = status === 401
+    ? 'OpenAI API anahtar\u0131 ge\u00e7ersiz veya yetkisiz.'
+    : status === 402
+      ? String(rootError?.message || 'AI token bakiyesi yetersiz.')
+      : rateLimited
+        ? `AI servisi \u015fu anda yo\u011fun${pageSuffix}. Sistem tekrar denedi ancak bu i\u015flem tamamlanamad\u0131; l\u00fctfen biraz sonra tekrar dene.`
         : timedOut
-          ? 'AI iÅŸlemi zaman aÅŸÄ±mÄ±na uÄŸradÄ±. Daha kÃ¼Ã§Ã¼k bir sayfa aralÄ±ÄŸÄ± denemelisin.'
-          : `AI komutu iÅŸlenirken bir hata oluÅŸtu${process.env.NODE_ENV === 'production' ? '' : ` (${error?.message || 'unknown error'})`}`,
-  }
+          ? `AI i\u015flemi zaman a\u015f\u0131m\u0131na u\u011frad\u0131${pageSuffix}. Daha k\u00fc\u00e7\u00fck bir sayfa aral\u0131\u011f\u0131 denemelisin.`
+          : error?.cause
+            ? `\u00c7eviri${pageSuffix} tamamlanamad\u0131. Sistem ayn\u0131 sayfay\u0131 tekrar denedi; kaynak PDF metnini kontrol edip tekrar dene.`
+            : `AI komutu i\u015flenirken bir hata olu\u015ftu${process.env.NODE_ENV === 'production' ? '' : ` (${rootError?.message || 'unknown error'})`}`
+  return { status, error: userError }
+}
+
+const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+const isRetryableAiError = (error) => {
+  const status = Number(error?.status || error?.statusCode || error?.response?.status || 0)
+  if ([400, 401, 402, 403].includes(status)) return false
+  return status === 0 || status === 408 || status === 409 || status === 429 || status >= 500 || ['ETIMEDOUT', 'ECONNRESET', 'ECONNABORTED'].includes(error?.code) || ['APIConnectionTimeoutError', 'APIConnectionError', 'InternalServerError', 'RateLimitError'].includes(error?.name)
 }
 
 app.get('/api/ai/command/:jobId', (request, response) => {
   pruneAiCommandJobs()
   const job = aiCommandJobs.get(request.params.jobId)
   const accessToken = String(request.headers['x-ai-job-token'] || '')
-  if (!job || !accessToken || accessToken !== job.accessToken) return response.status(404).json({ error: 'AI iÅŸlemi bulunamadÄ± veya sÃ¼resi doldu.' })
+  if (!job || !accessToken || accessToken !== job.accessToken) return response.status(404).json({ error: 'AI i\u015flemi bulunamad\u0131 veya s\u00fcresi doldu.' })
   if (job.status === 'processing') return response.status(202).json({ status: 'processing', jobId: request.params.jobId, progress: job.progress || null })
   if (job.status === 'error') return response.status(job.error.status).json({ error: job.error.error })
   response.json(job.result)
@@ -1915,21 +1929,32 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
   if (sourceFile.mimetype !== 'application/pdf') return response.status(400).json({ error: 'Only PDF files are supported.' })
   if (imageFile && !['image/png', 'image/jpeg'].includes(imageFile.mimetype)) return response.status(400).json({ error: 'Only PNG or JPEG images are supported.' })
 
-  const translationMode = /(?:\u00e7evir|\u00e7eviri|translate|translation|traduc|traduce|ingilizce|\u0131ngilizce|english|ispanyolca|spanish|espa\u00f1ol)/i.test(prompt)
+  const translationKeywords = ['\u00e7evir', '\u00e7eviri', 'translate', 'translation', 'traduc', 'traduce', 'traduis', 'traduire', 'traduz', 'tradurre', '\u00fcbersetz', '\u043f\u0435\u0440\u0435\u0432', '\u043f\u0440\u0435\u0432\u043e\u0434', '\u7ffb\u8bd1', '\u7ffb\u8a33', '\ubc88\uc5ed', '\u062a\u0631\u062c\u0645', '\u0905\u0928\u0941\u0935\u093e\u0926', '\u03bc\u03b5\u03c4\u03ac\u03c6\u03c1\u03b1\u03c3', '\u05ea\u05e8\u05d2\u05dd', 't\u0142umacz', 'p\u0159elo\u017e', 'vertal', '\u00f6vers\u00e4tt', 'k\u00e4\u00e4nn', 'terjemah', 'd\u1ecbch', 'ingilizce', '\u0131ngilizce', 'english', 'ispanyolca', 'spanish', 'espa\u00f1ol']
+  const translationMode = translationKeywords.some((keyword) => prompt.toLocaleLowerCase().includes(keyword))
   const targetLanguageHint = /(?:ingilizce|\u0131ngilizce|english)/i.test(prompt) ? 'English' : /(?:t\u00fcrk\u00e7e|turkish|turkce)/i.test(prompt) ? 'Turkish' : /(?:ispanyolca|spanish|espa\u00f1ol)/i.test(prompt) ? 'Spanish' : 'the language explicitly requested by the user'
   let preExtractedTranslationPages = null
   let preExtractedTranslationText = ''
+  let preExtractedTranslationPageCount = 0
   if (translationMode) {
     try {
-      preExtractedTranslationPages = (await extractTextPages(sourceFile.buffer)).filter((page) => page.text)
+      const extractedPages = await extractTextPages(sourceFile.buffer)
+      preExtractedTranslationPageCount = extractedPages.length
+      preExtractedTranslationPages = extractedPages.filter((page) => page.text)
       preExtractedTranslationText = preExtractedTranslationPages
         .map((page) => `[Page ${page.page}]\n${(page.lines?.length ? page.lines : [page.text]).join('\n')}`)
         .join('\n\n')
         .slice(0, 120000)
     } catch (error) {
       console.error('[translation-extraction]', error?.message || error)
-      return response.status(422).json({ error: 'PDF metin katmanÄ± okunamadÄ±. Bu dosyada aranabilir metin bulunduÄŸundan emin ol.' })
+      return response.status(422).json({ error: 'PDF metin katman\u0131 okunamad\u0131. Bu dosyada aranabilir metin bulundu\u011fundan emin ol.' })
     }
+  }
+  if (translationMode && preExtractedTranslationPageCount > 30) {
+    return response.status(413).json({
+      error: 'PDF \u00e7evirisi tek istekte en fazla 30 sayfay\u0131 destekliyor. L\u00fctfen dosyay\u0131 30 sayfal\u0131k par\u00e7alara b\u00f6l\u00fcp tekrar dene.',
+      maxPages: 30,
+      pageCount: preExtractedTranslationPageCount,
+    })
   }
   const largeTranslation = translationMode && (preExtractedTranslationPages?.length > 12 || preExtractedTranslationText.length >= 90000)
 
@@ -2054,7 +2079,10 @@ Automatically identify the source language from the extracted PDF text; the user
       let completedTranslationPages = 0
       const translatePage = async (page) => {
         const pageSource = (page.lines?.length ? page.lines : [page.text]).join('\n')
-        const pageResult = await client.responses.create({
+        let lastError = null
+        for (let attempt = 0; attempt < 3; attempt += 1) {
+          try {
+            const pageResult = await client.responses.create({
           ...planRequest,
           instructions: `You are translating exactly one PDF page for a production document editor. Automatically detect the source language from the page; the user does not need to provide it. Translate the complete source page into ${targetLanguageHint}. Never summarize, shorten, omit, or rewrite away content. Keep every heading, label, paragraph, sentence, name, number, date, and punctuation. Lorem Ipsum, pseudo-Latin, filler text, and mixed-language text are not already translated; convert them into coherent ${targetLanguageHint}. Preserve the source line breaks and return the same number of non-empty lines whenever possible. Return exactly one translate action for page ${page.page}; its text must be the source page and its replacement must be the complete translation. Return no other action and no explanation.\n\nSOURCE PAGE ${page.page}:\n${pageSource}`,
           input: [{
@@ -2067,9 +2095,19 @@ Automatically identify the source language from the extracted PDF text; the user
         const pagePlan = JSON.parse(pageResult.output_text)
         const action = Array.isArray(pagePlan.actions) ? pagePlan.actions.find((candidate) => candidate?.type === 'translate') : null
         if (!action?.replacement?.trim()) throw new Error(`Translation for page ${page.page} was incomplete.`)
-        return { ...action, type: 'translate', page: page.page, text: page.text }
+            return { ...action, type: 'translate', page: page.page, text: page.text }
+          } catch (error) {
+            lastError = error
+            if (!isRetryableAiError(error) || attempt === 2) break
+            await wait(1500 * (attempt + 1))
+          }
+        }
+        const finalError = new Error(`Translation for page ${page.page} failed after 3 attempts.`)
+        finalError.status = lastError?.status || lastError?.statusCode
+        finalError.cause = lastError
+        throw finalError
       }
-      const workerCount = Math.min(3, extractedTranslationPages.length)
+      const workerCount = Math.min(2, extractedTranslationPages.length)
       await Promise.all(Array.from({ length: workerCount }, async () => {
         while (true) {
           const pageIndex = nextPageIndex
@@ -2186,7 +2224,7 @@ Automatically identify the source language from the extracted PDF text; the user
         job.error = formatAiCommandError(error)
         job.finishedAt = Date.now()
       })
-    return response.status(202).json({ status: 'processing', jobId, jobToken: accessToken, pageCount: preExtractedTranslationPages?.length || 0 })
+    return response.status(202).json({ status: 'processing', jobId, jobToken: accessToken, pageCount: preExtractedTranslationPageCount || preExtractedTranslationPages?.length || 0 })
   }
 
   try {

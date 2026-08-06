@@ -733,9 +733,9 @@ function App() {
   const shareCloudFile = async (cloudFile) => {
     const result = await apiFetch('/api/storage/share', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ path: cloudFile.path, expiresIn: 86400 }) })
     const data = await result.json().catch(() => ({}))
-    if (!result.ok) throw new Error(data.error || 'PaylaÅŸÄ±m baÄŸlantÄ±sÄ± oluÅŸturulamadÄ±.')
+    if (!result.ok) throw new Error(data.error || 'Payla\u015f\u0131m ba\u011flant\u0131s\u0131 olu\u015fturulamad\u0131.')
     await navigator.clipboard?.writeText(data.signedUrl)
-    setToast({ tone: 'success', text: '24 saatlik gÃ¼venli paylaÅŸÄ±m baÄŸlantÄ±sÄ± panoya kopyalandÄ±.' })
+    setToast({ tone: 'success', text: '24 saatlik g\u00fcvenli payla\u015f\u0131m ba\u011flant\u0131s\u0131 panoya kopyaland\u0131.' })
   }
 
   const unreadNotificationCount = notifications.filter((notification) => !readNotificationIds.includes(notification.id)).length
@@ -975,8 +975,8 @@ function App() {
       if (result.status === 202) {
         const queued = await result.json().catch(() => ({}))
         setLongTaskProgress(queued.progress || { phase: 'translation', completedPages: 0, totalPages: queued.pageCount || 0, percent: 0 })
-        if (!queued.jobId || !queued.jobToken) throw new Error('Uzun PDF iÅŸlemi baÅŸlatÄ±lamadÄ±.')
-        setToast({ tone: 'info', text: `${queued.pageCount || 'Uzun'} sayfalÄ±k PDF Ã§evirisi arka planda sÃ¼rÃ¼yor.` })
+        if (!queued.jobId || !queued.jobToken) throw new Error('Uzun PDF i\u015flemi ba\u015flat\u0131lamad\u0131.')
+        setToast({ tone: 'info', text: `${queued.pageCount || 'Uzun'} sayfal\u0131k PDF \u00e7evirisi arka planda s\u00fcr\u00fcyor.` })
         const deadline = Date.now() + 15 * 60 * 1000
         while (Date.now() < deadline) {
           await new Promise((resolve) => window.setTimeout(resolve, 2500))
@@ -990,7 +990,7 @@ function App() {
           setLongTaskProgress((current) => current ? { ...current, phase: 'complete', percent: 100 } : current)
           break
         }
-        if (result.status === 202) throw new Error('Uzun PDF Ã§evirisi beklenen sÃ¼rede tamamlanmadÄ±. Ä°ÅŸlemi daha kÃ¼Ã§Ã¼k sayfa aralÄ±klarÄ±yla deneyebilirsin.')
+        if (result.status === 202) throw new Error('Uzun PDF \u00e7evirisi beklenen s\u00fcrede tamamlanmad\u0131. \u0130\u015flemi daha k\u00fc\u00e7\u00fck sayfa aral\u0131klar\u0131yla deneyebilirsin.')
       }
       const rawResponse = await result.text()
       let data = {}
