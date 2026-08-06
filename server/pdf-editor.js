@@ -105,22 +105,45 @@ const underlineText = async (pdfDocument, pdfBytes, action) => {
   return matchCount
 }
 
-const wrapText = (text, font, size, maxWidth) => {
-  const words = String(text || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
-  if (!words.length) return []
-  const lines = []
-  let current = ''
-  for (const word of words) {
-    const candidate = current ? `${current} ${word}` : word
-    if (!current || font.widthOfTextAtSize(candidate, size) <= maxWidth) {
-      current = candidate
-    } else {
-      lines.push(current)
-      current = word
+const groupMatchedTextLines = (matches) => {
+  const groups = []
+  for (const item of matches) {
+    const tolerance = Math.max(2, Math.abs(item.height || 10) * 0.55)
+    let group = groups.find((candidate) => Math.abs(candidate.y - item.y) <= tolerance)
+    if (!group) {
+      group = { y: item.y, items: [] }
+      groups.push(group)
     }
+    group.items.push(item)
+    group.y = (group.y + item.y) / 2
   }
-  if (current) lines.push(current)
-  return lines
+  return groups
+    .sort((left, right) => right.y - left.y)
+    .map((group) => {
+      const items = group.items.sort((left, right) => left.x - right.x)
+      const left = Math.min(...items.map((item) => item.x + (Number.isFinite(item.startRatio) ? item.startRatio : 0)))
+      const right = Math.max(...items.map((item) => item.x + (Number.isFinite(item.endRatio) ? item.endRatio : item.width)))
+      const height = Math.max(...items.map((item) => Math.max(6, item.height || 10)))
+      return { text: items.map((item) => item.text).join(' ').replace(/\s+/g, ' ').trim(), x: left, right, y: Math.max(...items.map((item) => item.y)), height, size: height }
+    })
+}
+
+const distributeTranslatedLines = (replacement, sourceLines) => {
+  const rawLines = String(replacement || '').split(/\r?\n/).map((line) => line.trim())
+  if (rawLines.length === sourceLines.length) return rawLines
+  const words = String(replacement || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
+  if (!words.length) return sourceLines.map(() => '')
+  const sourceLength = sourceLines.reduce((sum, line) => sum + Math.max(1, line.text.length), 0)
+  let wordIndex = 0
+  return sourceLines.map((line, index) => {
+    const remainingLines = sourceLines.length - index - 1
+    if (index === sourceLines.length - 1) return words.slice(wordIndex).join(' ')
+    const desired = Math.max(1, Math.round(words.length * Math.max(1, line.text.length) / sourceLength))
+    const take = Math.min(desired, Math.max(1, words.length - wordIndex - remainingLines))
+    const result = words.slice(wordIndex, wordIndex + take).join(' ')
+    wordIndex += take
+    return result
+  })
 }
 
 const translateTextBlock = async (pdfDocument, pagesWithText, action) => {
@@ -136,31 +159,17 @@ const translateTextBlock = async (pdfDocument, pagesWithText, action) => {
     matchCount += matches.length
 
     const pageWidth = pdfPage.getWidth()
-    const pageHeight = pdfPage.getHeight()
-    const left = Math.max(12, Math.min(...matches.map((match) => match.x + match.startRatio)) - 2)
-    const right = Math.min(pageWidth - 12, Math.max(...matches.map((match) => match.x + (match.endRatio || match.width))) + 2)
-    const bottom = Math.max(12, Math.min(...matches.map((match) => match.y - Math.max(2, match.height * 0.25))) - 2)
-    const top = Math.min(pageHeight - 12, Math.max(...matches.map((match) => match.y + Math.max(6, match.height))) + 2)
-    const width = Math.max(80, right - left)
-    const sourceSize = matches.reduce((sum, match) => sum + Math.max(6, match.height), 0) / matches.length
-    let fontSize = Math.max(6, Math.min(12, sourceSize))
-    let lineHeight = fontSize * 1.28
-    let lines = wrapText(action.replacement, font, fontSize, width)
-    const availableHeight = Math.max(lineHeight, top - bottom)
-
-    while (lines.length * lineHeight > availableHeight && fontSize > 5) {
-      fontSize = Math.max(5, fontSize - 0.5)
-      lineHeight = fontSize * 1.28
-      lines = wrapText(action.replacement, font, fontSize, width)
-    }
-
-    const coverHeight = Math.max(12, top - bottom)
-    pdfPage.drawRectangle({ x: Math.max(0, left - 3), y: Math.max(0, bottom - 3), width: Math.min(pageWidth - left + 3, width + 6), height: Math.min(pageHeight - bottom, coverHeight + 6), color: rgb(1, 1, 1), opacity: 1 })
-    let drawY = Math.min(pageHeight - fontSize - 6, top - fontSize)
-    for (const line of lines) {
-      if (drawY < 5) break
-      pdfPage.drawText(line, { x: left, y: drawY, size: fontSize, font, color: rgb(0.08, 0.08, 0.08) })
-      drawY -= lineHeight
+    const sourceLines = groupMatchedTextLines(matches)
+    if (!sourceLines.length) continue
+    const translatedLines = distributeTranslatedLines(action.replacement, sourceLines)
+    for (const [index, sourceLine] of sourceLines.entries()) {
+      const translatedLine = translatedLines[index] || ''
+      const left = Math.max(6, sourceLine.x - 2)
+      const width = Math.max(24, Math.min(pageWidth - left - 6, sourceLine.right - sourceLine.x + 4))
+      let fontSize = Math.max(5, Math.min(18, sourceLine.size))
+      while (font.widthOfTextAtSize(translatedLine, fontSize) > width && fontSize > 5) fontSize = Math.max(5, fontSize - 0.5)
+      pdfPage.drawRectangle({ x: left, y: Math.max(0, sourceLine.y - sourceLine.height * 0.35 - 2), width, height: Math.max(10, sourceLine.height * 1.45), color: rgb(1, 1, 1), opacity: 1 })
+      if (translatedLine) pdfPage.drawText(translatedLine, { x: left + 1, y: sourceLine.y, size: fontSize, font, color: rgb(0.08, 0.08, 0.08) })
     }
   }
 

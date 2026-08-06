@@ -18,13 +18,30 @@ export async function extractTextPages(pdfBytes) {
     for (let pageNumber = 1; pageNumber <= documentProxy.numPages; pageNumber += 1) {
       const page = await documentProxy.getPage(pageNumber)
       const content = await page.getTextContent()
-      const text = content.items
+      const textItems = content.items
         .filter((item) => typeof item.str === 'string')
+      const lines = []
+      textItems.forEach((item) => {
+        const y = Number(item.transform?.[5] || 0)
+        const tolerance = Math.max(2, Math.abs(Number(item.transform?.[3] || 10)) * 0.45)
+        let line = lines.find((candidate) => Math.abs(candidate.y - y) <= tolerance)
+        if (!line) {
+          line = { y, items: [] }
+          lines.push(line)
+        }
+        line.items.push(item)
+        line.y = (line.y + y) / 2
+      })
+      const lineText = lines
+        .sort((left, right) => right.y - left.y)
+        .map((line) => line.items.sort((left, right) => (left.transform?.[4] || 0) - (right.transform?.[4] || 0)).map((item) => item.str).join(' ').replace(/\s+/g, ' ').trim())
+        .filter(Boolean)
+      const text = textItems
         .map((item) => item.str)
         .join(' ')
         .replace(/\s+/g, ' ')
         .trim()
-      pages.push({ page: pageNumber, text, normalizedText: normalizeText(text) })
+      pages.push({ page: pageNumber, text, lines: lineText, normalizedText: normalizeText(text) })
     }
   } finally {
     if (typeof documentProxy.cleanup === 'function') await documentProxy.cleanup()

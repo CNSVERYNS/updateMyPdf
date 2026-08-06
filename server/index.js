@@ -1888,11 +1888,12 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
     const translationMode = /(?:çevir|çeviri|translate|translation|traduc|traduce|ingilizce|english|ispanyolca|spanish|español)/i.test(prompt)
     const targetLanguageHint = /(?:ingilizce|english)/i.test(prompt) ? 'English' : /(?:türkçe|turkish|turkce)/i.test(prompt) ? 'Turkish' : /(?:ispanyolca|spanish|español)/i.test(prompt) ? 'Spanish' : 'the language explicitly requested by the user'
     let extractedTranslationText = ''
+    let extractedTranslationPages = []
     if (translationMode) {
       const extractedPages = await extractTextPages(sourceFile.buffer)
-      extractedTranslationText = extractedPages
-        .filter((page) => page.text)
-        .map((page) => `[Page ${page.page}]\n${page.text}`)
+      extractedTranslationPages = extractedPages.filter((page) => page.text)
+      extractedTranslationText = extractedTranslationPages
+        .map((page) => `[Page ${page.page}]\n${(page.lines?.length ? page.lines : [page.text]).join('\n')}`)
         .join('\n\n')
         .slice(0, 120000)
     }
@@ -1940,16 +1941,28 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
     let result = await client.responses.create(planRequest, { timeout: 180000 })
 
     if (!result.output_text?.trim()) throw new Error('The model returned an empty response.')
-    let plan = JSON.parse(result.output_text)
+    const normalizeTranslationPlan = (candidate) => {
+      if (!translationMode || !extractedTranslationPages.length) return candidate
+      const actionsByPage = new Map((Array.isArray(candidate.actions) ? candidate.actions : []).filter((action) => action?.type === 'translate' && Number.isInteger(action.page)).map((action) => [action.page, action]))
+      const actions = extractedTranslationPages.map((page) => {
+        const action = actionsByPage.get(page.page)
+        if (!action) return null
+        return { ...action, type: 'translate', page: page.page, text: page.text }
+      }).filter(Boolean)
+      return { ...candidate, actions }
+    }
+    let plan = normalizeTranslationPlan(JSON.parse(result.output_text))
+    const expectedPages = extractedTranslationPages.map((page) => page.page)
     const translationActions = Array.isArray(plan.actions) ? plan.actions.filter((action) => action?.type === 'translate' && String(action.text || '').trim() && String(action.replacement || '').trim()) : []
-    const translationNoOp = translationMode && (!translationActions.length || translationActions.every((action) => String(action.text).trim() === String(action.replacement).trim()))
+    const hasAllTranslationPages = !expectedPages.length || expectedPages.every((page) => translationActions.some((action) => action.page === page))
+    const translationNoOp = translationMode && (!hasAllTranslationPages || !translationActions.length || translationActions.every((action) => String(action.text).trim() === String(action.replacement).trim()))
     if (translationNoOp) {
       result = await client.responses.create({
         ...planRequest,
         instructions: `${commandInstructions}\n\nHARD REQUIREMENT: Do not return assistant text saying the document is already English. Return one actual translate action per extracted page now. The target language is the language explicitly named by the user. Preserve names and numbers, but translate all non-target-language prose.`,
       }, { timeout: 180000 })
       if (!result.output_text?.trim()) throw new Error('The translation planner returned an empty response.')
-      plan = JSON.parse(result.output_text)
+      plan = normalizeTranslationPlan(JSON.parse(result.output_text))
     }
     if (translationMode) {
       const finalTranslationActions = Array.isArray(plan.actions) ? plan.actions.filter((action) => action?.type === 'translate' && String(action.text || '').trim() && String(action.replacement || '').trim()) : []
