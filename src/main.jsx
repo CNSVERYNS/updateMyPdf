@@ -1042,6 +1042,7 @@ function App() {
   }
 
   const previewScale = useMemo(() => ({ transform: `scale(${zoom / 100})` }), [zoom])
+  const pdfPreviewSize = useMemo(() => ({ width: `${Math.round(620 * zoom / 100)}px` }), [zoom])
 
   return (
     <div className="app-shell">
@@ -1121,8 +1122,12 @@ function App() {
             onDrop={(event) => { event.preventDefault(); setIsDragging(false); setPdf(event.dataTransfer.files?.[0]) }}
           >
             {fileUrl ? (
-              <div className="uploaded-pdf" style={previewScale}>
-                <PdfPreview src={fileUrl} page={currentPage} onPageCount={setPageCount} />
+              <div className="pdf-viewer-scroll">
+                <div className="pdf-viewer-scroll-inner">
+                  <div className="uploaded-pdf" style={pdfPreviewSize}>
+                    <PdfPreview src={fileUrl} page={currentPage} onPageCount={setPageCount} />
+                  </div>
+                </div>
               </div>
             ) : (
               <div className="empty-viewer">

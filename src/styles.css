@@ -64,8 +64,11 @@ button { cursor: pointer; }
 .zoom-label, .page-indicator, .fit-label { color: #7e8aa5; font-family: 'DM Mono', monospace; font-size: 10px; }
 .page-indicator { display: flex; align-items: center; gap: 7px; }
 .page-indicator span { padding: 4px 10px; border: 1px solid #2b3652; border-radius: 5px; color: #e1e4f1; background: #151e34; }
-.viewer-stage { position: relative; display: flex; flex: 1; align-items: center; justify-content: center; min-height: 0; overflow: auto; padding: 38px; background: #0d1425; background-image: radial-gradient(#1d2942 1px, transparent 1px); background-size: 19px 19px; }
+.viewer-stage { position: relative; display: flex; flex: 1; min-height: 0; overflow: hidden; padding: 0; background: #0d1425; background-image: radial-gradient(#1d2942 1px, transparent 1px); background-size: 19px 19px; }
 .viewer-stage.dragging { background-color: #171d38; box-shadow: inset 0 0 0 2px var(--purple); }
+.pdf-viewer-scroll { display: flex; width: 100%; min-width: 0; min-height: 0; overflow: auto; padding: 32px 30px 48px; scrollbar-color: #b7bdc6 transparent; scrollbar-width: thin; }
+.pdf-viewer-scroll-inner { display: flex; min-width: 100%; min-height: 100%; }
+.viewer-stage > .empty-viewer { margin: auto; }
 .empty-viewer { display: flex; align-items: center; justify-content: center; gap: clamp(25px, 7vw, 110px); width: min(900px, 100%); }
 .empty-viewer-copy { width: 235px; text-align: center; }
 .upload-icon { display: grid; place-items: center; width: 48px; height: 48px; margin: 0 auto 16px; border: 1px solid #41366b; border-radius: 14px; color: var(--purple-light); background: #201c3b; }
@@ -90,9 +93,9 @@ button { cursor: pointer; }
 .summary-card svg { flex: 0 0 auto; color: #8873e2; }
 .summary-card b { display: block; margin-bottom: 2px; color: #6959ae; font-family: Manrope, sans-serif; font-size: 8px; }
 .doc-footer { position: absolute; right: 28px; bottom: 19px; left: 28px; padding-top: 10px; border-top: 1px solid #d2d8de; }
-.uploaded-pdf { position: relative; display: flex; width: min(780px, 100%); min-height: 560px; align-items: flex-start; justify-content: center; transform-origin: center center; transition: transform .25s ease; }
-.pdf-preview-canvas-wrap { position: relative; width: 100%; min-height: 560px; border-radius: 3px; background: #ffffff; box-shadow: 0 18px 35px rgba(0,0,0,.3); overflow: hidden; }
-.pdf-preview-canvas { display: block; width: 100%; height: auto; min-height: 560px; background: #ffffff; opacity: 1; transition: opacity .2s ease; }
+.uploaded-pdf { position: relative; flex: 0 0 auto; align-self: flex-start; max-width: calc(100% - 4px); margin: auto; }
+.pdf-preview-canvas-wrap { position: relative; width: 100%; min-height: 420px; aspect-ratio: .707; border-radius: 3px; background: #ffffff; box-shadow: 0 18px 35px rgba(0,0,0,.3); overflow: hidden; }
+.pdf-preview-canvas { display: block; width: 100%; height: auto; min-height: 0; background: #ffffff; opacity: 1; transition: opacity .2s ease; }
 .pdf-preview-canvas.loading { opacity: .16; }
 .pdf-preview-state { position: absolute; inset: 0; display: grid; place-items: center; padding: 24px; color: #69717b; background: rgba(255,255,255,.82); font-size: 11px; text-align: center; }
 .pdf-preview-state.error { color: #a63227; background: #fff8f6; }
@@ -399,6 +402,7 @@ body { color: var(--text); background: var(--bg); }
 
 /* Keep the AI composer visible after a PDF adds messages to the chat. */
 .workspace > .chat-panel { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; min-height: 0; overflow: hidden; }
+.viewer-panel { min-height: 0; }
 .chat-body { min-width: 0; min-height: 0; overflow-y: auto; }
 .chat-panel > .suggestions, .chat-panel > .composer-wrap { min-width: 0; min-height: 0; }
 .signature-placement-paper { touch-action: none; user-select: none; }
@@ -406,6 +410,7 @@ body { color: var(--text); background: var(--bg); }
 @media (max-width: 850px) {
   .app-shell { overflow: visible; }
   .workspace { overflow: visible; }
+  .viewer-stage { padding: 0; }
   .workspace > .chat-panel { min-height: 560px; height: auto; overflow: visible; }
   .chat-body { min-height: 220px; max-height: 50vh; overflow-y: auto; }
   .chat-panel > .composer-wrap { position: sticky; bottom: 0; z-index: 4; padding-top: 10px; background: #fffaf8; }
