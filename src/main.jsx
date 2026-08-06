@@ -1248,24 +1248,67 @@ function DemoDocument({ change, style }) {
 
 function PdfPreview({ src, page, onPageCount }) {
   const canvasRef = useRef(null)
+  const pdfDocumentRef = useRef(null)
+  const loadingTaskRef = useRef(null)
+  const renderTaskRef = useRef(null)
+  const [pdfDocument, setPdfDocument] = useState(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
 
   useEffect(() => {
     let cancelled = false
-    let documentLoadingTask = null
-    let pdfDocument = null
-    let renderTask = null
     setLoading(true)
     setError('')
+    setPdfDocument(null)
+    renderTaskRef.current?.cancel()
+    loadingTaskRef.current?.destroy()
+    pdfDocumentRef.current?.destroy()
+    renderTaskRef.current = null
+    loadingTaskRef.current = null
+    pdfDocumentRef.current = null
 
-    const renderPage = async () => {
+    const loadPdf = async () => {
       try {
         const { getDocument } = await loadPdfJs()
-        documentLoadingTask = getDocument({ url: src })
-        pdfDocument = await documentLoadingTask.promise
-        if (cancelled) return
-        onPageCount(pdfDocument.numPages)
+        const loadingTask = getDocument({ url: src })
+        loadingTaskRef.current = loadingTask
+        const document = await loadingTask.promise
+        if (cancelled) {
+          document.destroy()
+          return
+        }
+        pdfDocumentRef.current = document
+        onPageCount(document.numPages)
+        setPdfDocument(document)
+      } catch (loadError) {
+        if (!cancelled && loadError?.name !== 'RenderingCancelledException') {
+          setError('PDF preview bu belgeyi görüntüleyemedi. İndirme yine kullanılabilir.')
+          setLoading(false)
+        }
+      }
+    }
+    loadPdf()
+    return () => {
+      cancelled = true
+      renderTaskRef.current?.cancel()
+      loadingTaskRef.current?.destroy()
+      pdfDocumentRef.current?.destroy()
+      renderTaskRef.current = null
+      loadingTaskRef.current = null
+      pdfDocumentRef.current = null
+    }
+  }, [src, onPageCount])
+
+  useEffect(() => {
+    if (!pdfDocument) return undefined
+    let cancelled = false
+    setLoading(true)
+    setError('')
+    renderTaskRef.current?.cancel()
+
+    const renderPage = async () => {
+      let renderTask = null
+      try {
         const pdfPage = await pdfDocument.getPage(Math.min(Math.max(1, page), pdfDocument.numPages))
         if (cancelled) return
         const viewport = pdfPage.getViewport({ scale: 1.35 })
@@ -1277,10 +1320,15 @@ function PdfPreview({ src, page, onPageCount }) {
         canvas.height = Math.floor(viewport.height * deviceScale)
         canvas.style.aspectRatio = `${viewport.width} / ${viewport.height}`
         renderTask = pdfPage.render({ canvasContext: context, viewport, transform: deviceScale !== 1 ? [deviceScale, 0, 0, deviceScale, 0, 0] : null })
+        renderTaskRef.current = renderTask
         await renderTask.promise
-        if (!cancelled) setLoading(false)
+        if (!cancelled && renderTaskRef.current === renderTask) {
+          renderTaskRef.current = null
+          setLoading(false)
+        }
       } catch (renderError) {
-        if (!cancelled && renderError?.name !== 'RenderingCancelledException') {
+        if (!cancelled && renderError?.name !== 'RenderingCancelledException' && renderTaskRef.current === renderTask) {
+          renderTaskRef.current = null
           setError('PDF preview bu belgeyi görüntüleyemedi. İndirme yine kullanılabilir.')
           setLoading(false)
         }
@@ -1289,11 +1337,10 @@ function PdfPreview({ src, page, onPageCount }) {
     renderPage()
     return () => {
       cancelled = true
-      renderTask?.cancel()
-      documentLoadingTask?.destroy()
-      pdfDocument?.destroy()
+      renderTaskRef.current?.cancel()
+      renderTaskRef.current = null
     }
-  }, [src, page, onPageCount])
+  }, [pdfDocument, page])
 
   return <div className="pdf-preview-canvas-wrap">{error ? <div className="pdf-preview-state error">{error}</div> : <canvas ref={canvasRef} className={`pdf-preview-canvas ${loading ? 'loading' : ''}`} aria-label="PDF preview" />}{loading && !error && <div className="pdf-preview-state">PDF preview hazırlanıyor...</div>}</div>
 }
