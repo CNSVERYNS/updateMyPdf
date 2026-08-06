@@ -171,6 +171,8 @@ function App() {
   const [activeTool, setActiveTool] = useState('select')
   const [changes, setChanges] = useState([])
   const [showHistory, setShowHistory] = useState(false)
+  const [notifications, setNotifications] = useState([])
+  const [readNotificationIds, setReadNotificationIds] = useState([])
   const [comparison, setComparison] = useState(null)
   const [showComparison, setShowComparison] = useState(false)
   const [isComparing, setIsComparing] = useState(false)
@@ -212,6 +214,9 @@ function App() {
   const restoredDocumentRef = useRef(false)
   const tokenReloadPromptedRef = useRef(false)
   const autoSaveRequestRef = useRef(0)
+  const notificationStateReadyRef = useRef(false)
+  const knownNotificationIdsRef = useRef(new Set())
+  const skipNotificationPersistRef = useRef(false)
 
   useEffect(() => {
     return () => {
@@ -267,6 +272,41 @@ function App() {
   }, [])
 
   useEffect(() => {
+    if (!session?.user?.id) {
+      setNotifications([])
+      setReadNotificationIds([])
+      notificationStateReadyRef.current = false
+      knownNotificationIdsRef.current = new Set()
+      return undefined
+    }
+    const storageKey = `updatemypdf-notifications-${session.user.id}`
+    let stored = {}
+    try { stored = JSON.parse(localStorage.getItem(storageKey) || '{}') } catch { stored = {} }
+    const storedNotifications = Array.isArray(stored.notifications) ? stored.notifications : []
+    const storedReadIds = Array.isArray(stored.readIds) ? stored.readIds : []
+    setNotifications(storedNotifications)
+    setReadNotificationIds(storedReadIds)
+    knownNotificationIdsRef.current = new Set(storedNotifications.map((item) => item.id))
+    notificationStateReadyRef.current = false
+    skipNotificationPersistRef.current = true
+    return undefined
+  }, [session?.user?.id])
+
+  useEffect(() => {
+    if (!session?.user?.id) return undefined
+    if (skipNotificationPersistRef.current) {
+      skipNotificationPersistRef.current = false
+      return undefined
+    }
+    try {
+      localStorage.setItem(`updatemypdf-notifications-${session.user.id}`, JSON.stringify({ notifications, readIds: readNotificationIds }))
+    } catch {
+      // Notification history remains available for the current session if storage is unavailable.
+    }
+    return undefined
+  }, [session?.user?.id, notifications, readNotificationIds])
+
+  useEffect(() => {
     if (!session || !file || currentCloudPath) return undefined
     let cancelled = false
     uploadFileToCloud(file, '')
@@ -313,7 +353,7 @@ function App() {
 
   useEffect(() => {
     if (!toast) return undefined
-    const timeout = window.setTimeout(() => setToast(null), 5200)
+    const timeout = window.setTimeout(() => setToast(null), 4500)
     return () => window.clearTimeout(timeout)
   }, [toast])
 
@@ -325,8 +365,50 @@ function App() {
     const data = await result.json().catch(() => ({}))
     if (!result.ok) throw new Error(data.error || 'Workspace dosyaları okunamadı.')
     setCloudFiles(data.files || [])
-    setWorkspaceRequests(data.signatureRequests || [])
+    const nextRequests = data.signatureRequests || []
+    setWorkspaceRequests(nextRequests)
+    const signedNotifications = nextRequests
+      .filter((request) => request.status === 'signed' && request.signedDocumentUrl)
+      .map((request) => {
+        const review = request.workflow_type === 'review'
+        const actorName = request.recipient_name || request.recipient_email || 'Bir kullanıcı'
+        return {
+          id: `signature-signed:${request.id}`,
+          type: 'signature_signed',
+          requestId: request.id,
+          title: review ? `${actorName} dosyanı inceledi` : `${actorName} dosyanı imzaladı`,
+          detail: `${request.document_name} · ${new Date(request.signed_at || request.created_at).toLocaleString()}`,
+          signedDocumentUrl: request.signedDocumentUrl,
+          createdAt: request.signed_at || request.created_at || new Date().toISOString(),
+        }
+      })
+    const newNotifications = signedNotifications.filter((notification) => !knownNotificationIdsRef.current.has(notification.id))
+    signedNotifications.forEach((notification) => knownNotificationIdsRef.current.add(notification.id))
+    if (signedNotifications.length) {
+      setNotifications((current) => {
+        const merged = new Map(current.map((notification) => [notification.id, notification]))
+        signedNotifications.forEach((notification) => merged.set(notification.id, { ...merged.get(notification.id), ...notification }))
+        return [...merged.values()].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+      })
+    }
+    if (notificationStateReadyRef.current && newNotifications.length) {
+      const latest = newNotifications[newNotifications.length - 1]
+      setToast({ tone: 'success', text: latest.title })
+    }
+    notificationStateReadyRef.current = true
   }
+
+  useEffect(() => {
+    if (!session) return undefined
+    const refreshWorkspace = () => loadCloudFiles().catch(() => {})
+    refreshWorkspace()
+    const interval = window.setInterval(refreshWorkspace, 15000)
+    window.addEventListener('focus', refreshWorkspace)
+    return () => {
+      window.clearInterval(interval)
+      window.removeEventListener('focus', refreshWorkspace)
+    }
+  }, [session?.user?.id])
 
   const openAuthPrompt = () => {
     setAuthMode('signup')
@@ -592,6 +674,26 @@ function App() {
     if (!result.ok) throw new Error(data.error || 'PaylaÅŸÄ±m baÄŸlantÄ±sÄ± oluÅŸturulamadÄ±.')
     await navigator.clipboard?.writeText(data.signedUrl)
     setToast({ tone: 'success', text: '24 saatlik gÃ¼venli paylaÅŸÄ±m baÄŸlantÄ±sÄ± panoya kopyalandÄ±.' })
+  }
+
+  const unreadNotificationCount = notifications.filter((notification) => !readNotificationIds.includes(notification.id)).length
+
+  const openNotification = async (notification) => {
+    const popup = window.open('', '_blank')
+    let signedDocumentUrl = notification.signedDocumentUrl
+    try {
+      const result = await apiFetch('/api/signatures', { headers: authHeaders() })
+      const data = await result.json().catch(() => ({}))
+      const latest = data.requests?.find((request) => request.id === notification.requestId)
+      if (latest?.signedDocumentUrl) signedDocumentUrl = latest.signedDocumentUrl
+      if (!signedDocumentUrl) throw new Error('İmzalı PDF bağlantısı artık kullanılamıyor.')
+      if (popup) popup.location.href = signedDocumentUrl
+      else window.open(signedDocumentUrl, '_blank', 'noopener,noreferrer')
+      setReadNotificationIds((current) => current.includes(notification.id) ? current : [...current, notification.id])
+    } catch (error) {
+      popup?.close()
+      setToast({ tone: 'error', text: error.message || 'İmzalı PDF açılamadı.' })
+    }
   }
 
   const activeChange = changes[changes.length - 1]
@@ -961,9 +1063,12 @@ function App() {
               <span className="token-balance-icon" aria-hidden="true">⚡</span>
               <span><strong>{tokenUsage.remaining}</strong><small>/{tokenUsage.limit} token</small></span>
             </button>}
-            <button className="icon-button" title="Geçmişi göster" aria-label="Geçmişi göster" onClick={() => setShowHistory((value) => !value)}>
-              <span className="topbar-emoji" aria-hidden="true">🕘</span>
-            </button>
+            <span className="history-button-wrap">
+              <button className="icon-button" title="Bildirimleri göster" aria-label="Bildirimleri göster" onClick={() => setShowHistory((value) => !value)}>
+                <span className="topbar-emoji" aria-hidden="true">🕘</span>
+              </button>
+              {unreadNotificationCount > 0 && <span className="notification-badge">{unreadNotificationCount > 99 ? '99+' : unreadNotificationCount}</span>}
+            </span>
             <button className="icon-button" title="İki PDF’i karşılaştır" aria-label="İki PDF’i karşılaştır" onClick={() => compareInputRef.current?.click()}>
               {isComparing ? <LoaderCircle className="spin" size={17} /> : <span className="topbar-emoji" aria-hidden="true">🔎</span>}
             </button>
@@ -1100,7 +1205,7 @@ function App() {
         </section>
       </main>
 
-      {showHistory && <HistoryDrawer changes={changes} onClose={() => setShowHistory(false)} />}
+      {showHistory && <HistoryDrawer notifications={notifications} readNotificationIds={readNotificationIds} unreadCount={unreadNotificationCount} changes={changes} onNotificationOpen={openNotification} onClose={() => setShowHistory(false)} />}
       {showComparison && <ComparisonDrawer comparison={comparison} onClose={() => setShowComparison(false)} />}
       {showCloudFiles && <CloudFilesDrawer files={cloudFiles} signatureRequests={workspaceRequests} onClose={() => setShowCloudFiles(false)} onOpen={downloadCloudFile} onDelete={deleteCloudFile} onShare={shareCloudFile} onResend={resendSignatureRequest} onCancel={cancelSignatureRequest} />}
       {showSignatureRequest && <SignatureRequestModal busy={signatureRequestBusy} error={signatureRequestError} result={signatureRequestResult} documentName={file?.name} senderName={session?.user?.user_metadata?.full_name || session?.user?.email} senderEmail={session?.user?.email} pageCount={pageCount} currentPage={currentPage} onClose={() => setShowSignatureRequest(false)} onSubmit={createSignatureRequest} onOpenRequests={() => { setShowSignatureRequest(false); setShowSignatureRequests(true) }} />}
@@ -1218,11 +1323,18 @@ function AssistantQuestionsCard({ questions, onSubmit, disabled }) {
   )
 }
 
-function HistoryDrawer({ changes, onClose }) {
+function HistoryDrawer({ notifications, readNotificationIds, unreadCount, changes, onNotificationOpen, onClose }) {
   return (
     <aside className="history-drawer">
-      <div className="history-heading"><div><span>DOCUMENT</span><h2>Change history</h2></div><button className="icon-button light" onClick={onClose}><X size={17} /></button></div>
-      {changes.length === 0 ? <div className="history-empty"><History size={20} /><p>Henüz bir değişiklik yok.</p></div> : <div className="history-list">{[...changes].reverse().map((change, index) => <div className="history-item" key={change.id}><div className="history-dot">{index === 0 ? <Check size={12} /> : index + 1}</div><div><strong>{change.title}</strong><p>{change.detail}</p></div></div>)}</div>}
+      <div className="history-heading"><div><span>ACTIVITY LOG</span><h2>Bildirimler {unreadCount > 0 && <em className="history-unread-label">{unreadCount} yeni</em>}</h2></div><button className="icon-button light" onClick={onClose}><X size={17} /></button></div>
+      {notifications.length === 0 ? <div className="history-empty"><History size={20} /><p>Henüz bir bildirim yok.</p></div> : <div className="notification-list">{notifications.map((notification) => {
+        const isRead = readNotificationIds.includes(notification.id)
+        return <button type="button" className={`notification-item ${isRead ? 'read' : 'unread'}`} key={notification.id} onClick={() => onNotificationOpen(notification)}>
+          <span className="notification-dot">{isRead ? <Check size={12} /> : '•'}</span>
+          <span className="notification-copy"><strong>{notification.title}</strong><small>{notification.detail}</small><em>İmzalı PDF’i aç ↗</em></span>
+        </button>
+      })}</div>}
+      {changes.length > 0 && <div className="change-log-section"><div className="change-log-label">PDF DÜZENLEME KAYITLARI</div><div className="history-list">{[...changes].reverse().map((change, index) => <div className="history-item" key={change.id}><div className="history-dot">{index === 0 ? <Check size={12} /> : index + 1}</div><div><strong>{change.title}</strong><p>{change.detail}</p></div></div>)}</div></div>}
     </aside>
   )
 }
