@@ -215,6 +215,7 @@ function App() {
   const [messages, setMessages] = useState(() => persistedAssistantState.messages?.length ? persistedAssistantState.messages : initialMessages)
   const [input, setInput] = useState('')
   const [isThinking, setIsThinking] = useState(false)
+  const [longTaskProgress, setLongTaskProgress] = useState(null)
   const [aiStatus, setAiStatus] = useState('idle')
   const [pageCount, setPageCount] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
@@ -907,6 +908,7 @@ function App() {
     setMessages((current) => [...current, nextUserMessage])
     setInput('')
     setIsThinking(true)
+    setLongTaskProgress(null)
 
     try {
       if (!file) {
@@ -972,14 +974,20 @@ function App() {
       let result = await apiFetch('/api/ai/command', { method: 'POST', headers: authHeaders(), body: formData })
       if (result.status === 202) {
         const queued = await result.json().catch(() => ({}))
+        setLongTaskProgress(queued.progress || { phase: 'translation', completedPages: 0, totalPages: queued.pageCount || 0, percent: 0 })
         if (!queued.jobId || !queued.jobToken) throw new Error('Uzun PDF iÅŸlemi baÅŸlatÄ±lamadÄ±.')
         setToast({ tone: 'info', text: `${queued.pageCount || 'Uzun'} sayfalÄ±k PDF Ã§evirisi arka planda sÃ¼rÃ¼yor.` })
         const deadline = Date.now() + 15 * 60 * 1000
         while (Date.now() < deadline) {
           await new Promise((resolve) => window.setTimeout(resolve, 2500))
           const polled = await apiFetch(`/api/ai/command/${encodeURIComponent(queued.jobId)}`, { headers: { ...authHeaders(), 'X-AI-Job-Token': queued.jobToken } })
-          if (polled.status === 202) continue
+          if (polled.status === 202) {
+            const progressData = await polled.json().catch(() => ({}))
+            if (progressData.progress) setLongTaskProgress(progressData.progress)
+            continue
+          }
           result = polled
+          setLongTaskProgress((current) => current ? { ...current, phase: 'complete', percent: 100 } : current)
           break
         }
         if (result.status === 202) throw new Error('Uzun PDF Ã§evirisi beklenen sÃ¼rede tamamlanmadÄ±. Ä°ÅŸlemi daha kÃ¼Ã§Ã¼k sayfa aralÄ±klarÄ±yla deneyebilirsin.')
@@ -1071,6 +1079,7 @@ function App() {
       ])
     } finally {
       setIsThinking(false)
+      setLongTaskProgress(null)
     }
   }
 
@@ -1241,6 +1250,7 @@ function App() {
                 <div className="message-bubble thinking"><span /><span /><span /></div>
               </div>
             )}
+            {isThinking && longTaskProgress && <AiProgressCard progress={longTaskProgress} />}
             {!file && assistantQuestions.length > 0 && <AssistantQuestionsCard questions={assistantQuestions} onSubmit={(answers) => submitPrompt(answers)} disabled={isThinking} />}
             <div ref={chatEndRef} />
           </div>
@@ -2097,6 +2107,24 @@ function PricingModal({ currentPlan, onClose, onSelect }) {
         </div>
         <p className="pricing-footnote">AI kredileri belge uzunluğu ve kullanılan modele göre hesaplanır. Kullanılmayan krediler devretmez.</p>
       </div>
+    </div>
+  )
+}
+
+function AiProgressCard({ progress }) {
+  const percent = Math.max(0, Math.min(100, Math.round(Number(progress?.percent) || 0)))
+  const totalPages = Number(progress?.totalPages) || 0
+  const completedPages = Math.min(totalPages, Number(progress?.completedPages) || 0)
+  const detail = progress?.phase === 'translation'
+    ? `${completedPages}/${totalPages || '—'} sayfa çevrildi`
+    : progress?.phase === 'pdf'
+      ? 'PDF düzenleniyor ve preview hazırlanıyor'
+      : 'İşlem tamamlanıyor'
+  return (
+    <div className="ai-progress-card" role="status" aria-live="polite">
+      <div className="ai-progress-heading"><span>Uzun PDF işleniyor</span><strong>%{percent}</strong></div>
+      <div className="ai-progress-track" aria-label={`İşlem yüzde ${percent} tamamlandı`}><span style={{ width: `${percent}%` }} /></div>
+      <div className="ai-progress-meta"><span>{detail}</span><span>Devam ediyor</span></div>
     </div>
   )
 }

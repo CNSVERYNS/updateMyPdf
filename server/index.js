@@ -1833,7 +1833,7 @@ app.get('/api/ai/command/:jobId', (request, response) => {
   const job = aiCommandJobs.get(request.params.jobId)
   const accessToken = String(request.headers['x-ai-job-token'] || '')
   if (!job || !accessToken || accessToken !== job.accessToken) return response.status(404).json({ error: 'AI iÅŸlemi bulunamadÄ± veya sÃ¼resi doldu.' })
-  if (job.status === 'processing') return response.status(202).json({ status: 'processing', jobId: request.params.jobId })
+  if (job.status === 'processing') return response.status(202).json({ status: 'processing', jobId: request.params.jobId, progress: job.progress || null })
   if (job.status === 'error') return response.status(job.error.status).json({ error: job.error.error })
   response.json(job.result)
 })
@@ -1940,6 +1940,7 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
     return response.status(error.status || 500).json({ error: error.message || 'AI token bakiyesi kullanılamıyor.', tokenUsage: error.tokenUsage || null })
   }
 
+  let reportAiCommandProgress = () => {}
   const executeAiCommand = async () => {
     const client = getClient()
     const extractedTranslationText = preExtractedTranslationText
@@ -2050,6 +2051,7 @@ Automatically identify the source language from the extracted PDF text; the user
     if (translationPlanNeedsRetry(plan)) {
       const pagePlans = new Array(extractedTranslationPages.length)
       let nextPageIndex = 0
+      let completedTranslationPages = 0
       const translatePage = async (page) => {
         const pageSource = (page.lines?.length ? page.lines : [page.text]).join('\n')
         const pageResult = await client.responses.create({
@@ -2074,6 +2076,13 @@ Automatically identify the source language from the extracted PDF text; the user
           nextPageIndex += 1
           if (pageIndex >= extractedTranslationPages.length) return
           pagePlans[pageIndex] = await translatePage(extractedTranslationPages[pageIndex])
+          completedTranslationPages += 1
+          reportAiCommandProgress({
+            phase: 'translation',
+            completedPages: completedTranslationPages,
+            totalPages: extractedTranslationPages.length,
+            percent: Math.min(85, Math.max(1, Math.round((completedTranslationPages / extractedTranslationPages.length) * 85))),
+          })
         }
       }))
       plan = {
@@ -2083,6 +2092,7 @@ Automatically identify the source language from the extracted PDF text; the user
       }
     }
     if (translationPlanNeedsRetry(plan)) throw new Error('Tam çeviri planı eksik döndü; belge değiştirilmedi. Lütfen aynı isteği tekrar dene.')
+    reportAiCommandProgress({ phase: 'pdf', completedPages: extractedTranslationPages.length, totalPages: extractedTranslationPages.length, percent: largeTranslation ? 90 : 90 })
     const removePasswordAction = plan.actions.find((action) => action.type === 'remove_password')
     const executorActions = removePasswordAction ? plan.actions.filter((action) => action.type !== 'remove_password') : plan.actions
     const editableSource = removePasswordAction ? await decryptPdfBuffer(sourceFile.buffer, removePasswordAction.password || '') : sourceFile.buffer
@@ -2135,6 +2145,7 @@ Automatically identify the source language from the extracted PDF text; the user
     const ocrAction = plan.actions.find((action) => action.type === 'ocr_scan')
     const ocrPages = ocrAction ? await ocrPdfBuffer(editableSource, ocrAction.language || 'eng') : null
     const tokenUsage = await consumeAiTokens(tokenContext)
+    reportAiCommandProgress({ phase: 'complete', completedPages: extractedTranslationPages.length, totalPages: extractedTranslationPages.length, percent: 100 })
     return {
       ...plan,
       editedPdf: Buffer.from(finalPdfBytes).toString('base64'),
@@ -2156,8 +2167,14 @@ Automatically identify the source language from the extracted PDF text; the user
     pruneAiCommandJobs()
     const jobId = randomBytes(18).toString('hex')
     const accessToken = randomBytes(24).toString('hex')
-    const job = { createdAt: Date.now(), status: 'processing', accessToken }
+    const job = {
+      createdAt: Date.now(),
+      status: 'processing',
+      accessToken,
+      progress: { phase: 'translation', completedPages: 0, totalPages: preExtractedTranslationPages?.length || 0, percent: 0 },
+    }
     aiCommandJobs.set(jobId, job)
+    reportAiCommandProgress = (progress) => { job.progress = { ...job.progress, ...progress } }
     executeAiCommand()
       .then((result) => {
         job.status = 'complete'
