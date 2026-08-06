@@ -1940,9 +1940,12 @@ Automatically identify the source language from the extracted PDF text; the user
       max_output_tokens: translationMode ? 24000 : 8000,
       reasoning: { effort: translationMode ? 'medium' : 'low' },
     }
-    let result = await client.responses.create(planRequest, { timeout: 180000 })
-
-    if (!result.output_text?.trim()) throw new Error('The model returned an empty response.')
+    const largeTranslation = translationMode && (extractedTranslationPages.length > 12 || extractedTranslationText.length >= 90000)
+    let result = null
+    if (!largeTranslation) {
+      result = await client.responses.create(planRequest, { timeout: 180000 })
+      if (!result.output_text?.trim()) throw new Error('The model returned an empty response.')
+    }
     const normalizeTranslationPlan = (candidate) => {
       if (!translationMode || !extractedTranslationPages.length) return candidate
       const actionsByPage = new Map((Array.isArray(candidate.actions) ? candidate.actions : []).filter((action) => action?.type === 'translate' && Number.isInteger(action.page)).map((action) => [action.page, action]))
@@ -1953,7 +1956,9 @@ Automatically identify the source language from the extracted PDF text; the user
       }).filter(Boolean)
       return { ...candidate, actions }
     }
-    let plan = normalizeTranslationPlan(JSON.parse(result.output_text))
+    let plan = largeTranslation
+      ? { assistantMessage: '', summary: '', actions: [] }
+      : normalizeTranslationPlan(JSON.parse(result.output_text))
     const comparableTranslationText = (value) => String(value || '')
       .normalize('NFKC')
       .replace(/\s+/g, ' ')
@@ -1998,7 +2003,9 @@ Automatically identify the source language from the extracted PDF text; the user
       return !hasAllPages || hasLikelyUntranslatedPage || isNoOp || isIncomplete
     }
     if (translationPlanNeedsRetry(plan)) {
-      const pagePlans = await Promise.all(extractedTranslationPages.map(async (page) => {
+      const pagePlans = new Array(extractedTranslationPages.length)
+      let nextPageIndex = 0
+      const translatePage = async (page) => {
         const pageSource = (page.lines?.length ? page.lines : [page.text]).join('\n')
         const pageResult = await client.responses.create({
           ...planRequest,
@@ -2014,6 +2021,15 @@ Automatically identify the source language from the extracted PDF text; the user
         const action = Array.isArray(pagePlan.actions) ? pagePlan.actions.find((candidate) => candidate?.type === 'translate') : null
         if (!action?.replacement?.trim()) throw new Error(`Translation for page ${page.page} was incomplete.`)
         return { ...action, type: 'translate', page: page.page, text: page.text }
+      }
+      const workerCount = Math.min(3, extractedTranslationPages.length)
+      await Promise.all(Array.from({ length: workerCount }, async () => {
+        while (true) {
+          const pageIndex = nextPageIndex
+          nextPageIndex += 1
+          if (pageIndex >= extractedTranslationPages.length) return
+          pagePlans[pageIndex] = await translatePage(extractedTranslationPages[pageIndex])
+        }
       }))
       plan = {
         assistantMessage: 'Belgenin tüm sayfaları çevrildi.',
