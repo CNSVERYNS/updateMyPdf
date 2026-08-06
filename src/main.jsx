@@ -190,6 +190,8 @@ function App() {
   const [cloudFiles, setCloudFiles] = useState([])
   const [workspaceRequests, setWorkspaceRequests] = useState([])
   const [showCloudFiles, setShowCloudFiles] = useState(false)
+  const [tokenUsage, setTokenUsage] = useState(null)
+  const [showTokenReloadNudge, setShowTokenReloadNudge] = useState(false)
   const [assistantQuestions, setAssistantQuestions] = useState([])
   const [assistantProfile, setAssistantProfile] = useState(() => persistedAssistantState.profile || null)
   const [cachedDocument, setCachedDocument] = useState(() => persistedAssistantState.document || null)
@@ -206,6 +208,7 @@ function App() {
   const imageInputRef = useRef(null)
   const chatEndRef = useRef(null)
   const restoredDocumentRef = useRef(false)
+  const tokenReloadPromptedRef = useRef(false)
 
   useEffect(() => {
     return () => {
@@ -257,6 +260,34 @@ function App() {
       listener.subscription.unsubscribe()
     }
   }, [])
+
+  useEffect(() => {
+    if (!session) {
+      setTokenUsage(null)
+      setShowTokenReloadNudge(false)
+      tokenReloadPromptedRef.current = false
+      return undefined
+    }
+    let cancelled = false
+    apiFetch('/api/account/tokens', { headers: { Authorization: `Bearer ${session.access_token}` } })
+      .then((response) => response.ok ? response.json() : null)
+      .then((usage) => { if (!cancelled && usage) setTokenUsage(usage) })
+      .catch(() => {})
+    return () => { cancelled = true }
+  }, [session])
+
+  useEffect(() => {
+    if (!tokenUsage) return
+    if (!tokenUsage.low) {
+      tokenReloadPromptedRef.current = false
+      setShowTokenReloadNudge(false)
+      return
+    }
+    if (tokenReloadPromptedRef.current) return
+    tokenReloadPromptedRef.current = true
+    setShowTokenReloadNudge(true)
+    setToast({ tone: 'error', text: `AI token bakiyen %20'nin altına indi. ${tokenUsage.reloadTokens} tokenlık yenileme paketi hazır.` })
+  }, [tokenUsage?.low, tokenUsage?.remaining])
 
   useEffect(() => {
     try {
@@ -405,7 +436,6 @@ function App() {
     setFileUrl('')
     setPdfTitle('')
     setCloudFiles([])
-    setCurrentCloudPath('')
     setShowCloudFiles(false)
     setShowAccount(false)
     setMessages(initialMessages)
@@ -703,6 +733,7 @@ function App() {
         } catch {
           throw new Error(`Belge asistanı geçerli bir JSON cevabı döndürmedi (${assistantResponse.status}).`)
         }
+        if (assistantData.tokenUsage) setTokenUsage(assistantData.tokenUsage)
         if (!assistantResponse.ok) throw new Error(assistantData.error || 'Belge asistanı yanıt veremedi.')
         setAssistantQuestions(assistantData.questions || [])
         setAssistantProfile({
@@ -735,7 +766,6 @@ function App() {
               const cloudResponse = await apiFetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: cloudFormData })
               const cloudData = await cloudResponse.json().catch(() => ({}))
               if (!cloudResponse.ok) throw new Error(cloudData.error || 'Cloud kaydı başarısız oldu.')
-              setCurrentCloudPath(cloudData.path || '')
               assistantText += '\n\nHesabına bağlı cloud alanına da kaydettim.'
               try { await loadCloudFiles() } catch { /* The upload itself succeeded; workspace refresh can retry. */ }
             } catch (cloudError) {
@@ -761,6 +791,7 @@ function App() {
       } catch {
         throw new Error(`Backend geçerli bir JSON cevabı döndürmedi (${result.status}). API sunucusunun çalıştığından emin ol.`)
       }
+      if (data.tokenUsage) setTokenUsage(data.tokenUsage)
       if (!result.ok) throw new Error(data.error || 'AI isteği başarısız oldu.')
 
       const firstAction = data.actions?.[0]
@@ -892,6 +923,10 @@ function App() {
             <button className="icon-button" title="PDF’leri birleştir" aria-label="PDF’leri birleştir" onClick={() => mergeInputRef.current?.click()}>
               {isMerging ? <LoaderCircle className="spin" size={17} /> : <span className="topbar-emoji" aria-hidden="true">🧩</span>}
             </button>
+            {tokenUsage && <button className={`token-balance ${tokenUsage.low ? 'low' : ''}`} title={`${tokenUsage.planName} planı · ${tokenUsage.remaining} / ${tokenUsage.limit} AI tokenı kaldı`} onClick={() => tokenUsage.low ? setShowTokenReloadNudge(true) : setShowAccount(true)}>
+              <span className="token-balance-icon" aria-hidden="true">⚡</span>
+              <span><strong>{tokenUsage.remaining}</strong><small>/{tokenUsage.limit} token</small></span>
+            </button>}
             <button className="icon-button" title="Planları gör" aria-label="Planları gör" onClick={() => setShowPricing(true)}><span className="topbar-emoji" aria-hidden="true">💳</span></button>
             <button className="icon-button" title="İmza taleplerini takip et" aria-label="İmza taleplerini takip et" onClick={() => setShowSignatureRequests(true)}><span className="topbar-emoji" aria-hidden="true">✅</span></button>
             <button className="icon-button" title="İmza veya inceleme talebi oluştur" aria-label="İmza veya inceleme talebi oluştur" onClick={openSignatureRequest}><span className="topbar-emoji" aria-hidden="true">✍️</span></button>
@@ -1030,6 +1065,7 @@ function App() {
       {showAuth && <AuthModal mode={authMode} busy={authBusy} error={authError} onModeChange={(mode) => { setAuthMode(mode); setAuthError('') }} onClose={() => setShowAuth(false)} onSubmit={handleAuthSubmit} />}
       {showAccount && session && <AccountManagementModal session={session} busy={profileBusy} error={profileError} onClose={() => setShowAccount(false)} onProfileSave={handleProfileSave} onChangeEmail={requestEmailChange} onConfirmEmailChange={confirmEmailChange} onRequestPasswordCode={requestPasswordVerification} onConfirmPasswordChange={confirmPasswordChange} onOpenPricing={() => { setShowAccount(false); setShowPricing(true) }} onOpenBilling={openBillingPortal} onSignOut={signOut} />}
       {showAccountNudge && !session && <AccountNudge onClose={() => setShowAccountNudge(false)} onSignup={openAuthPrompt} onPricing={() => setShowPricing(true)} />}
+      {showTokenReloadNudge && session && tokenUsage && <TokenReloadNudge usage={tokenUsage} onClose={() => setShowTokenReloadNudge(false)} onOpenPricing={() => { setShowTokenReloadNudge(false); setShowPricing(true) }} />}
       {showPricing && <PricingModal currentPlan={session?.user?.user_metadata?.plan || 'basic'} onClose={() => setShowPricing(false)} onSelect={async (plan) => { try { await startCheckout(plan) } catch (checkoutError) { setToast({ tone: 'error', text: checkoutError.message || 'Ödeme ekranı açılamadı.' }) } }} />}
       {toast && <ToastNotice notification={toast} onClose={() => setToast(null)} />}
     </div>
@@ -1681,6 +1717,24 @@ function AccountNudge({ onClose, onSignup, onPricing }) {
       <button type="button" className="account-nudge-secondary" onClick={onPricing}>Planlar</button>
       <button type="button" className="toast-close" onClick={onClose} aria-label="Bildirimi kapat"><X size={14} /></button>
     </aside>
+  )
+}
+
+function TokenReloadNudge({ usage, onClose, onOpenPricing }) {
+  return (
+    <div className="modal-backdrop token-reload-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
+      <section className="token-reload-modal" role="alertdialog" aria-modal="true">
+        <div className="token-reload-icon" aria-hidden="true">⚡</div>
+        <span className="token-reload-eyebrow">AI TOKEN BAKİYESİ</span>
+        <h2>Tokenlarını yenileme zamanı</h2>
+        <p>{usage.planName} planında kalan AI tokenın %20’nin altına indi. İşlerine ara vermemek için yenileme paketini şimdi inceleyebilirsin.</p>
+        <div className="token-reload-summary"><strong>{usage.remaining}</strong><span>/ {usage.limit} token kaldı</span></div>
+        <div className="token-reload-offer"><span>Önerilen yenileme</span><strong>+{usage.reloadTokens} token · ${usage.reloadPrice}</strong></div>
+        <div className="token-reload-actions"><button type="button" className="auth-submit" onClick={onOpenPricing}>Yenileme seçeneklerini gör</button><button type="button" className="auth-switch" onClick={onClose}>Daha sonra</button></div>
+        <small>Ödeme bağlantısı Stripe entegrasyonu aktif olduğunda kullanılabilir olacak.</small>
+        <button type="button" className="icon-button light token-reload-close" onClick={onClose} aria-label="Uyarıyı kapat"><X size={17} /></button>
+      </section>
+    </div>
   )
 }
 

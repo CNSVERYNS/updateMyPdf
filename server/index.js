@@ -85,6 +85,90 @@ const guestAiGuard = (request, response, next) => {
   return next()
 }
 
+const aiTokenPlans = {
+  basic: { name: 'Basic', price: '9.99', tokens: 100 },
+  pro: { name: 'Pro', price: '24.99', tokens: 500 },
+  ultimate: { name: 'Ultimate', price: '59.99', tokens: 2000 },
+}
+const aiTokenCost = 5
+
+const getAiTokenPlan = (user) => {
+  const planId = String(user?.user_metadata?.plan || 'basic').toLowerCase()
+  return { id: aiTokenPlans[planId] ? planId : 'basic', ...(aiTokenPlans[planId] || aiTokenPlans.basic) }
+}
+
+const nextTokenPeriod = () => {
+  const next = new Date()
+  next.setMonth(next.getMonth() + 1)
+  return next.toISOString()
+}
+
+const toAiTokenUsage = (state) => ({
+  plan: state.plan.id,
+  planName: state.plan.name,
+  remaining: state.remaining,
+  limit: state.plan.tokens,
+  percentage: Math.min(100, Math.round((state.remaining / state.plan.tokens) * 100)),
+  low: state.remaining < state.plan.tokens * 0.2,
+  reloadTokens: state.plan.tokens,
+  reloadPrice: state.plan.price,
+  periodEndsAt: state.periodEndsAt,
+  costPerOperation: aiTokenCost,
+})
+
+const ensureAiTokenState = async (admin, user) => {
+  const plan = getAiTokenPlan(user)
+  const metadata = user.app_metadata || {}
+  const existingPlan = String(metadata.ai_tokens_plan || '')
+  const existingRemaining = Number(metadata.ai_tokens_remaining)
+  const existingPeriodEndsAt = String(metadata.ai_tokens_period_ends_at || '')
+  const periodExpired = !existingPeriodEndsAt || Date.parse(existingPeriodEndsAt) <= Date.now()
+  const planChanged = existingPlan !== plan.id
+  const needsInitialization = !Number.isFinite(existingRemaining) || periodExpired || planChanged
+  const state = {
+    plan,
+    remaining: needsInitialization ? plan.tokens : Math.max(0, existingRemaining),
+    periodEndsAt: needsInitialization ? nextTokenPeriod() : existingPeriodEndsAt,
+  }
+  if (!needsInitialization) return { user, state }
+  const nextAppMetadata = {
+    ...metadata,
+    ai_tokens_plan: plan.id,
+    ai_tokens_remaining: state.remaining,
+    ai_tokens_period_ends_at: state.periodEndsAt,
+  }
+  const updated = await admin.auth.admin.updateUserById(user.id, { app_metadata: nextAppMetadata })
+  if (updated.error) throw updated.error
+  return { user: updated.data.user || { ...user, app_metadata: nextAppMetadata }, state }
+}
+
+const prepareAiTokenUse = async (request) => {
+  if (!request.headers.authorization?.startsWith('Bearer ')) return null
+  const { admin, user } = await getSupabaseUser(request)
+  const ensured = await ensureAiTokenState(admin, user)
+  if (ensured.state.remaining < aiTokenCost) {
+    const error = new Error(`AI token bakiyen yetersiz. ${aiTokenCost} tokenlık işlem için önce tokenlarını yenilemelisin.`)
+    error.status = 402
+    error.tokenUsage = toAiTokenUsage(ensured.state)
+    throw error
+  }
+  return { admin, user: ensured.user, state: ensured.state }
+}
+
+const consumeAiTokens = async (context) => {
+  if (!context) return null
+  const nextRemaining = Math.max(0, context.state.remaining - aiTokenCost)
+  const nextAppMetadata = {
+    ...(context.user.app_metadata || {}),
+    ai_tokens_plan: context.state.plan.id,
+    ai_tokens_remaining: nextRemaining,
+    ai_tokens_period_ends_at: context.state.periodEndsAt,
+  }
+  const updated = await context.admin.auth.admin.updateUserById(context.user.id, { app_metadata: nextAppMetadata })
+  if (updated.error) throw updated.error
+  return toAiTokenUsage({ ...context.state, remaining: nextRemaining })
+}
+
 const safeFileName = (value) => String(value || 'document.pdf')
   .replace(/[^a-zA-Z0-9._-]+/g, '-')
   .replace(/^-+|-+$/g, '')
@@ -1079,6 +1163,17 @@ app.post('/api/billing/checkout', requireAuth, async (request, response) => {
   }
 })
 
+app.get('/api/account/tokens', requireAuth, async (request, response) => {
+  try {
+    const { admin, user } = request.supabaseContext
+    const ensured = await ensureAiTokenState(admin, user)
+    response.json(toAiTokenUsage(ensured.state))
+  } catch (error) {
+    console.error('[account-tokens]', error?.message || error)
+    response.status(error.status || 500).json({ error: 'AI token bakiyesi okunamadı.' })
+  }
+})
+
 app.post('/api/account/email/request', requireAuth, async (request, response) => {
   try {
     const { admin, user } = request.supabaseContext
@@ -1519,6 +1614,12 @@ app.post('/api/ai/assistant', async (request, response) => {
     facts: Array.isArray(sourceProfile.facts) ? sourceProfile.facts.filter((fact) => fact && typeof fact.key === 'string' && typeof fact.value === 'string').slice(-50).map((fact) => ({ key: fact.key.slice(0, 100), value: fact.value.slice(0, 1200) })) : [],
   }
   if (!message) return response.status(400).json({ error: 'Mesaj gerekli.' })
+  let tokenContext = null
+  try {
+    tokenContext = await prepareAiTokenUse(request)
+  } catch (error) {
+    return response.status(error.status || 500).json({ error: error.message || 'AI token bakiyesi kullanılamıyor.', tokenUsage: error.tokenUsage || null })
+  }
   try {
     const client = getClient()
     const likelyDraft = phase === 'draft' || profile.facts.length >= 6 || message.length >= 320
@@ -1557,11 +1658,12 @@ app.post('/api/ai/assistant', async (request, response) => {
       generatedPdf = pdfBytes.toString('base64')
       generatedFileName = `${safeFileName(title).replace(/\.pdf$/i, '') || 'document-draft'}.pdf`
     }
-    response.json({ ...assistantResult, generatedPdf, generatedFileName, model: assistantModel(), reasoningEffort: likelyDraft ? (process.env.OPENAI_ASSISTANT_DRAFT_REASONING || 'medium') : assistantReasoning() })
+    const tokenUsage = await consumeAiTokens(tokenContext)
+    response.json({ ...assistantResult, generatedPdf, generatedFileName, model: assistantModel(), reasoningEffort: likelyDraft ? (process.env.OPENAI_ASSISTANT_DRAFT_REASONING || 'medium') : assistantReasoning(), tokenUsage })
   } catch (error) {
     console.error('[ai-assistant]', error?.message || error)
-    const status = error?.status === 401 ? 401 : 500
-    response.status(status).json({ error: status === 401 ? 'OpenAI API anahtarı geçersiz veya yetkisiz.' : `Belge asistanı yanıt veremedi${process.env.NODE_ENV === 'production' ? '.' : ` (${error?.message || 'unknown error'})`}` })
+    const status = error?.status === 401 ? 401 : error?.status === 402 ? 402 : 500
+    response.status(status).json({ error: status === 401 ? 'OpenAI API anahtarı geçersiz veya yetkisiz.' : status === 402 ? error.message : `Belge asistanı yanıt veremedi${process.env.NODE_ENV === 'production' ? '.' : ` (${error?.message || 'unknown error'})`}` })
   }
 })
 
@@ -1573,6 +1675,13 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
   if (!sourceFile) return response.status(400).json({ error: 'A PDF file is required.' })
   if (sourceFile.mimetype !== 'application/pdf') return response.status(400).json({ error: 'Only PDF files are supported.' })
   if (imageFile && !['image/png', 'image/jpeg'].includes(imageFile.mimetype)) return response.status(400).json({ error: 'Only PNG or JPEG images are supported.' })
+
+  let tokenContext = null
+  try {
+    tokenContext = await prepareAiTokenUse(request)
+  } catch (error) {
+    return response.status(error.status || 500).json({ error: error.message || 'AI token bakiyesi kullanılamıyor.', tokenUsage: error.tokenUsage || null })
+  }
 
   try {
     const client = getClient()
@@ -1658,6 +1767,7 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
     }
     const ocrAction = plan.actions.find((action) => action.type === 'ocr_scan')
     const ocrPages = ocrAction ? await ocrPdfBuffer(editableSource, ocrAction.language || 'eng') : null
+    const tokenUsage = await consumeAiTokens(tokenContext)
     return response.json({
       ...plan,
       editedPdf: Buffer.from(finalPdfBytes).toString('base64'),
@@ -1671,14 +1781,17 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
       ocrPages,
       model: pdfEditorModel(),
       sourceFile: sourceFile.originalname || 'document.pdf',
+      tokenUsage,
     })
   } catch (error) {
     console.error('[ai-command]', error?.message || error)
-    const status = error?.status === 401 ? 401 : 500
+    const status = error?.status === 401 ? 401 : error?.status === 402 ? 402 : 500
     const developmentDetails = process.env.NODE_ENV === 'production' ? '' : ` (${error?.message || 'unknown error'})`
     return response.status(status).json({
       error: status === 401
         ? 'OpenAI API anahtarı geçersiz veya yetkisiz.'
+        : status === 402
+          ? error.message
         : `AI komutu işlenirken bir hata oluştu${developmentDetails}.`,
     })
   }
