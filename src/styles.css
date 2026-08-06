@@ -35,7 +35,7 @@ button { cursor: pointer; }
 .document-name svg { color: var(--purple-light); }
 .saved-state { display: flex; align-items: center; gap: 4px; margin-left: 7px; color: #6e7893; font-family: 'DM Mono', monospace; font-size: 10px; }
 .saved-state svg { color: #65cbb7; }
-.top-actions { flex: 0 0 auto; min-width: 220px; justify-content: flex-end; gap: 8px; }
+.top-actions { flex: 0 0 auto; min-width: 220px; margin-left: auto; justify-content: flex-end; gap: 8px; }
 .icon-button, .tool-button { display: grid; place-items: center; border: 0; color: #8792ad; background: transparent; border-radius: 7px; transition: .18s ease; }
 .icon-button { width: 32px; height: 32px; }
 .icon-button:hover, .tool-button:hover { color: #e8e7ff; background: #1c2640; }
