@@ -38,6 +38,7 @@ button { cursor: pointer; }
 .top-actions { flex: 0 0 auto; min-width: 220px; margin-left: auto; justify-content: flex-end; gap: 8px; }
 .icon-button, .tool-button { display: grid; place-items: center; border: 0; color: #8792ad; background: transparent; border-radius: 7px; transition: .18s ease; }
 .icon-button { width: 32px; height: 32px; }
+.topbar-emoji { display: inline-block; font-size: 16px; line-height: 1; }
 .icon-button:hover, .tool-button:hover { color: #e8e7ff; background: #1c2640; }
 .icon-button.light { color: #8f9ab5; }
 .export-button, .choose-file-button { display: flex; align-items: center; gap: 7px; border: 0; border-radius: 7px; color: #0b1020; background: #d6d7ff; font-size: 12px; font-weight: 700; transition: .18s ease; }

@@ -7,24 +7,20 @@ import {
   Check,
   ChevronDown,
   Cloud,
-  CloudUpload,
   CreditCard,
   Download,
   FilePlus2,
   FileText,
-  GitCompareArrows,
   History,
   Highlighter,
   ImagePlus,
   Link2,
   LoaderCircle,
   KeyRound,
-  ListChecks,
   LogIn,
   LogOut,
   MessageSquareText,
   Mail,
-  MoreHorizontal,
   PanelRight,
   PenLine,
   RotateCcw,
@@ -175,8 +171,6 @@ function App() {
   const [activeTool, setActiveTool] = useState('select')
   const [changes, setChanges] = useState([])
   const [showHistory, setShowHistory] = useState(false)
-  const [showCapabilities, setShowCapabilities] = useState(false)
-  const [capabilitySummary, setCapabilitySummary] = useState(null)
   const [comparison, setComparison] = useState(null)
   const [showComparison, setShowComparison] = useState(false)
   const [isComparing, setIsComparing] = useState(false)
@@ -196,8 +190,6 @@ function App() {
   const [cloudFiles, setCloudFiles] = useState([])
   const [workspaceRequests, setWorkspaceRequests] = useState([])
   const [showCloudFiles, setShowCloudFiles] = useState(false)
-  const [isCloudSaving, setIsCloudSaving] = useState(false)
-  const [currentCloudPath, setCurrentCloudPath] = useState('')
   const [assistantQuestions, setAssistantQuestions] = useState([])
   const [assistantProfile, setAssistantProfile] = useState(() => persistedAssistantState.profile || null)
   const [cachedDocument, setCachedDocument] = useState(() => persistedAssistantState.document || null)
@@ -250,13 +242,6 @@ function App() {
       setCachedDocument(null)
     }
   }, [cachedDocument])
-
-  useEffect(() => {
-    apiFetch('/api/capabilities')
-      .then((response) => response.ok ? response.json() : null)
-      .then((data) => setCapabilitySummary(data))
-      .catch(() => setCapabilitySummary(null))
-  }, [])
 
   useEffect(() => {
     if (!supabase) return undefined
@@ -440,31 +425,7 @@ function App() {
     const result = await apiFetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: formData })
     const data = await result.json().catch(() => ({}))
     if (!result.ok) throw new Error(data.error || 'PDF cloud’a yüklenemedi.')
-    setCurrentCloudPath(data.path || '')
     return data
-  }
-
-  const saveCurrentToCloud = async () => {
-    if (!file) return
-    if (!session) {
-      openAuthPrompt()
-      return
-    }
-    setIsCloudSaving(true)
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      const result = await apiFetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: formData })
-      const data = await result.json().catch(() => ({}))
-      if (!result.ok) throw new Error(data.error || 'PDF cloud’a yüklenemedi.')
-      setCurrentCloudPath(data.path || '')
-      setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: 'PDF private cloud storage’a kaydedildi.' }])
-      await loadCloudFiles()
-    } catch (error) {
-      setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: error.message || 'Cloud kaydı başarısız oldu.' }])
-    } finally {
-      setIsCloudSaving(false)
-    }
   }
 
   const openSignatureRequest = () => {
@@ -568,7 +529,7 @@ function App() {
   }
 
   const activeChange = changes[changes.length - 1]
-  const documentTitle = pdfTitle || file?.name || 'Untitled document'
+  const documentTitle = file?.name || pdfTitle || 'Untitled document'
   const visiblePageNumbers = useMemo(() => {
     const totalPages = pageCount || 1
     const visibleCount = Math.min(totalPages, 8)
@@ -914,7 +875,7 @@ function App() {
           <span className="beta-pill">BETA</span>
         </div>
 
-        {session && <div className="document-name">
+        {session && file && <div className="document-name">
           <FileText size={15} />
           <span>{documentTitle}</span>
           <span className="saved-state"><Check size={13} /> Saved</span>
@@ -922,30 +883,23 @@ function App() {
 
         <div className="top-actions">
           {session ? <>
-            <button className="icon-button" title="Geçmişi göster" onClick={() => setShowHistory((value) => !value)}>
-              <History size={17} />
+            <button className="icon-button" title="Geçmişi göster" aria-label="Geçmişi göster" onClick={() => setShowHistory((value) => !value)}>
+              <span className="topbar-emoji" aria-hidden="true">🕘</span>
             </button>
-            <button className="icon-button" title="Yetenekleri göster" onClick={() => setShowCapabilities((value) => !value)}>
-              <ListChecks size={17} />
+            <button className="icon-button" title="İki PDF’i karşılaştır" aria-label="İki PDF’i karşılaştır" onClick={() => compareInputRef.current?.click()}>
+              {isComparing ? <LoaderCircle className="spin" size={17} /> : <span className="topbar-emoji" aria-hidden="true">🔎</span>}
             </button>
-            <button className="icon-button" title="İki PDF’i karşılaştır" onClick={() => compareInputRef.current?.click()}>
-              {isComparing ? <LoaderCircle className="spin" size={17} /> : <GitCompareArrows size={17} />}
+            <button className="icon-button" title="PDF’leri birleştir" aria-label="PDF’leri birleştir" onClick={() => mergeInputRef.current?.click()}>
+              {isMerging ? <LoaderCircle className="spin" size={17} /> : <span className="topbar-emoji" aria-hidden="true">🧩</span>}
             </button>
-            <button className="icon-button" title="PDF’leri birleştir" onClick={() => mergeInputRef.current?.click()}>
-              {isMerging ? <LoaderCircle className="spin" size={17} /> : <FilePlus2 size={17} />}
-            </button>
-            <button className="icon-button" title="Planları gör" onClick={() => setShowPricing(true)}><MoreHorizontal size={18} /></button>
-            <button className="icon-button" title="İmza taleplerini takip et" onClick={() => setShowSignatureRequests(true)}><Check size={17} /></button>
-            <button className="icon-button" title="İmza veya inceleme talebi oluştur" onClick={openSignatureRequest}><PenLine size={17} /></button>
+            <button className="icon-button" title="Planları gör" aria-label="Planları gör" onClick={() => setShowPricing(true)}><span className="topbar-emoji" aria-hidden="true">💳</span></button>
+            <button className="icon-button" title="İmza taleplerini takip et" aria-label="İmza taleplerini takip et" onClick={() => setShowSignatureRequests(true)}><span className="topbar-emoji" aria-hidden="true">✅</span></button>
+            <button className="icon-button" title="İmza veya inceleme talebi oluştur" aria-label="İmza veya inceleme talebi oluştur" onClick={openSignatureRequest}><span className="topbar-emoji" aria-hidden="true">✍️</span></button>
             {supabaseConfigured && <>
-              <button className="icon-button cloud-menu-button" title="Cloud dosyalarını aç" onClick={openCloudFiles}><Cloud size={17} /></button>
-              <button className="icon-button cloud-menu-button" title="PDF’i cloud’a kaydet" onClick={saveCurrentToCloud}>
-                {isCloudSaving ? <LoaderCircle className="spin" size={17} /> : <CloudUpload size={17} />}
-              </button>
-              <button className="icon-button cloud-menu-button" title="Cloud hesabından çıkış" onClick={signOut}><LogOut size={17} /></button>
+              <button className="icon-button cloud-menu-button" title="Dosyaları göster" aria-label="Dosyaları göster" onClick={openCloudFiles}><span className="topbar-emoji" aria-hidden="true">📁</span></button>
             </>}
             <button className="export-button" onClick={downloadCurrentPdf}>
-              <Download size={15} /> Export
+              <span className="topbar-emoji" aria-hidden="true">⬇️</span> Export
             </button>
             <button className="avatar" title="Hesap ayarları" onClick={() => { setProfileError(''); setShowAccount(true) }}>{session.user.user_metadata?.full_name?.[0]?.toUpperCase() || session.user.email?.[0]?.toUpperCase() || 'C'}</button>
           </> : supabaseConfigured && <>
@@ -1069,7 +1023,6 @@ function App() {
       </main>
 
       {showHistory && <HistoryDrawer changes={changes} onClose={() => setShowHistory(false)} />}
-      {showCapabilities && <CapabilitiesDrawer summary={capabilitySummary} onClose={() => setShowCapabilities(false)} />}
       {showComparison && <ComparisonDrawer comparison={comparison} onClose={() => setShowComparison(false)} />}
       {showCloudFiles && <CloudFilesDrawer files={cloudFiles} signatureRequests={workspaceRequests} onClose={() => setShowCloudFiles(false)} onOpen={downloadCloudFile} onDelete={deleteCloudFile} onShare={shareCloudFile} onResend={resendSignatureRequest} onCancel={cancelSignatureRequest} />}
       {showSignatureRequest && <SignatureRequestModal busy={signatureRequestBusy} error={signatureRequestError} result={signatureRequestResult} documentName={file?.name} senderName={session?.user?.user_metadata?.full_name || session?.user?.email} senderEmail={session?.user?.email} pageCount={pageCount} currentPage={currentPage} onClose={() => setShowSignatureRequest(false)} onSubmit={createSignatureRequest} onOpenRequests={() => { setShowSignatureRequest(false); setShowSignatureRequests(true) }} />}
@@ -1296,7 +1249,7 @@ function CloudFilesDrawer({ files, signatureRequests, onClose, onOpen, onDelete,
         <button className={tab === 'pending' ? 'active' : ''} onClick={() => setTab('pending')}>İmza bekleyen <span>{pendingRequests.length}</span></button>
       </div>
       {error && <div className="auth-error inline-error">{error}</div>}
-      {tab === 'all' && (allFiles.length === 0 ? <div className="history-empty"><Cloud size={20} /><p>Henüz cloud dosyan yok.</p></div> : <div className="cloud-file-list">
+      {tab === 'all' && (allFiles.length === 0 ? <div className="history-empty"><Cloud size={20} /><p>Henüz kayıtlı dosyan yok.</p></div> : <div className="cloud-file-list">
         {allFiles.map((file) => (
           <div className="cloud-file-item" key={file.path}>
             <FileText size={16} />
@@ -1304,12 +1257,12 @@ function CloudFilesDrawer({ files, signatureRequests, onClose, onOpen, onDelete,
             {file.isSignedCopy ? <em className="request-status signed">signed</em> : pendingPaths.has(file.path) ? <em className="request-status pending">pending signature</em> : null}
             <button className="icon-button light" title="PDF’i aç" onClick={() => onOpen(file)}><Download size={15} /></button>
             <button className="icon-button light" title="Süreli paylaşım bağlantısı oluştur" onClick={async () => { try { await onShare(file) } catch (shareError) { setError(shareError.message || 'Bağlantı oluşturulamadı.') } }}><Link2 size={15} /></button>
-            <button className="icon-button light" title="Cloud’dan sil" onClick={async () => { try { await onDelete(file) } catch (deleteError) { setError(deleteError.message || 'Dosya silinemedi.') } }}><Trash2 size={15} /></button>
+            <button className="icon-button light" title="Dosyayı sil" onClick={async () => { try { await onDelete(file) } catch (deleteError) { setError(deleteError.message || 'Dosya silinemedi.') } }}><Trash2 size={15} /></button>
           </div>
         ))}
       </div>)}
       {tab === 'signed' && (signedFiles.length + signedRequests.length === 0 ? <div className="history-empty"><Check size={20} /><p>Henüz imzalanmış bir dosya yok.</p></div> : <div className="cloud-file-list workspace-request-list">
-        {signedFiles.map((file) => <div className="cloud-file-item workspace-request-item" key={file.path}><FileText size={16} /><div className="cloud-file-copy"><strong>{file.name}</strong><span>Cloud imzalı kopya · {new Date(file.createdAt).toLocaleString()}</span><button type="button" className="signed-document-link signed-document-button" onClick={() => onOpen(file)}>İmzalı PDF’i aç</button></div><em className="request-status signed">signed</em></div>)}
+        {signedFiles.map((file) => <div className="cloud-file-item workspace-request-item" key={file.path}><FileText size={16} /><div className="cloud-file-copy"><strong>{file.name}</strong><span>İmzalı kopya · {new Date(file.createdAt).toLocaleString()}</span><button type="button" className="signed-document-link signed-document-button" onClick={() => onOpen(file)}>İmzalı PDF’i aç</button></div><em className="request-status signed">signed</em></div>)}
         {signedRequests.map((request) => <div className="cloud-file-item workspace-request-item" key={request.id}><FileText size={16} /><div className="cloud-file-copy"><strong>{request.document_name}</strong><span>{request.recipient_name || request.recipient_email} · {new Date(request.signed_at || request.created_at).toLocaleString()}</span>{request.signedDocumentUrl && <a className="signed-document-link" href={request.signedDocumentUrl} target="_blank" rel="noreferrer">İmzalı PDF’i aç</a>}</div><em className="request-status signed">signed</em></div>)}
       </div>)}
       {tab === 'pending' && (pendingRequests.length === 0 ? <div className="history-empty"><PenLine size={20} /><p>Bekleyen imza talebi yok.</p></div> : <div className="cloud-file-list workspace-request-list">
