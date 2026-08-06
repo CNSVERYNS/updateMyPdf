@@ -73,10 +73,11 @@ const guestAiWindowMs = 24 * 60 * 60 * 1000
 const guestAiGuard = (request, response, next) => {
   if (request.headers.authorization?.startsWith('Bearer ')) return next()
   const clientKey = request.ip || request.headers['x-forwarded-for'] || 'anonymous'
+  const dailyLimit = request.path === '/assistant' ? 5 : 1
   const now = Date.now()
   const current = guestAiUsage.get(clientKey)
-  if (current && now - current.startedAt < guestAiWindowMs && current.count >= 1) {
-    return response.status(429).json({ error: 'İlk ücretsiz AI önizlemeni kullandın. Devam etmek için hesap oluştur.' })
+  if (current && now - current.startedAt < guestAiWindowMs && current.count >= dailyLimit) {
+    return response.status(429).json({ error: dailyLimit > 1 ? 'Ücretsiz belge asistanı limitine ulaştın. Devam etmek için hesap oluştur.' : 'İlk ücretsiz AI önizlemeni kullandın. Devam etmek için hesap oluştur.' })
   }
   if (!current || now - current.startedAt >= guestAiWindowMs) guestAiUsage.set(clientKey, { startedAt: now, count: 1 })
   else current.count += 1
@@ -349,6 +350,75 @@ const createAudioOverview = async (client, pdfBuffer) => {
   }
 }
 
+const pdfSafeText = (value) => String(value || '')
+  .replace(/[—–]/g, '-')
+  .replace(/[“”]/g, '"')
+  .replace(/[‘’]/g, "'")
+  .replace(/…/g, '...')
+  .replace(/•/g, '-')
+  .replace(/[^\x00-\xFF]/g, '')
+
+const wrapPdfText = (text, font, size, maxWidth) => {
+  const words = pdfSafeText(text).split(/\s+/).filter(Boolean)
+  if (!words.length) return ['']
+  const lines = []
+  let line = ''
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word
+    if (font.widthOfTextAtSize(candidate, size) <= maxWidth || !line) line = candidate
+    else {
+      lines.push(line)
+      line = word
+    }
+  }
+  if (line) lines.push(line)
+  return lines
+}
+
+const createTextPdfBuffer = async (title, content) => {
+  const document = await PDFDocument.create()
+  document.setTitle(pdfSafeText(title || 'Generated document'))
+  document.setAuthor('updateMyPDF AI')
+  document.setSubject('AI-generated document draft')
+  const regular = await document.embedFont(StandardFonts.Helvetica)
+  const bold = await document.embedFont(StandardFonts.HelveticaBold)
+  const pageSize = [612, 792]
+  const margin = 54
+  const lineHeight = 15
+  let page = document.addPage(pageSize)
+  let y = page.getHeight() - margin
+  const pages = [page]
+  const drawLine = (line, font, size, gap = 0) => {
+    if (y < margin + lineHeight * 2) {
+      page = document.addPage(pageSize)
+      pages.push(page)
+      y = page.getHeight() - margin
+    }
+    page.drawText(pdfSafeText(line), { x: margin, y, size, font, color: rgb(0.1, 0.12, 0.16) })
+    y -= lineHeight + gap
+  }
+  drawLine(title || 'Generated document', bold, 20, 10)
+  for (const rawLine of String(content || '').replaceAll('\r', '').split('\n')) {
+    const trimmed = rawLine.trim()
+    if (!trimmed) {
+      y -= 7
+      continue
+    }
+    const heading = trimmed.replace(/^#{1,6}\s*/, '')
+    const isHeading = heading !== trimmed || /^\d+[.)]\s/.test(trimmed)
+    const cleanLine = trimmed.replace(/^#{1,6}\s*/, '').replace(/\*\*(.*?)\*\*/g, '$1')
+    const font = isHeading ? bold : regular
+    const size = isHeading ? 13 : 10.5
+    const gap = isHeading ? 3 : 0
+    wrapPdfText(cleanLine, font, size, page.getWidth() - margin * 2).forEach((line) => drawLine(line, font, size, gap))
+  }
+  pages.forEach((currentPage, index) => {
+    currentPage.drawLine({ start: { x: margin, y: 36 }, end: { x: currentPage.getWidth() - margin, y: 36 }, thickness: 0.5, color: rgb(0.82, 0.83, 0.85) })
+    currentPage.drawText(`updateMyPDF · Draft · ${index + 1}/${pages.length}`, { x: margin, y: 23, size: 8, font: regular, color: rgb(0.42, 0.45, 0.5) })
+  })
+  return Buffer.from(await document.save())
+}
+
 const applyExternalPdfActions = async (pdfBuffer, actions) => {
   let outputBytes = pdfBuffer
   const appliedActions = []
@@ -459,6 +529,52 @@ const editPlanSchema = {
   },
   required: ['assistantMessage', 'summary', 'actions'],
 }
+
+const documentAssistantSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    status: { type: 'string', enum: ['answer', 'needs_info', 'draft_ready'] },
+    reply: { type: 'string' },
+    documentType: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    documentTitle: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    questions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          id: { type: 'string' },
+          label: { type: 'string' },
+          question: { type: 'string' },
+          kind: { type: 'string', enum: ['text', 'textarea', 'date', 'number', 'email', 'select'] },
+          required: { type: 'boolean' },
+          options: { anyOf: [{ type: 'array', items: { type: 'string' } }, { type: 'null' }] },
+          help: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+        },
+        required: ['id', 'label', 'question', 'kind', 'required', 'options', 'help'],
+      },
+    },
+    facts: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: { key: { type: 'string' }, value: { type: 'string' } },
+        required: ['key', 'value'],
+      },
+    },
+    documentContent: { anyOf: [{ type: 'string' }, { type: 'null' }] },
+    complianceNotes: { type: 'array', items: { type: 'string' } },
+  },
+  required: ['status', 'reply', 'documentType', 'documentTitle', 'questions', 'facts', 'documentContent', 'complianceNotes'],
+}
+
+const documentAssistantInstructions = `You are the document concierge for updateMyPDF. You are a warm, precise executive assistant who helps users collect facts and create professional document drafts in Turkish or English.
+Use the conversation history and the newest user message. Never invent critical facts, names, addresses, dates, prices, legal choices, or obligations. If material information is missing, return status needs_info and ask the smallest useful set of clear questions, no more than four at a time. Questions must be answerable by a normal person and should include a helpful example when useful.
+When the user asks for a lease, rental agreement, vehicle rental agreement, business contract, NDA, invoice, employment document, proposal, policy, letter, or another document, identify the document type and collect the relevant facts before drafting. Always ask for jurisdiction and document language when the document may have legal effect. For a Chicago residential lease, explicitly clarify that the property is inside the City of Chicago rather than a suburb, whether it is a whole unit or room, whether the owner occupies the building, whether it is subsidized or otherwise regulated, the parties, property address, term, rent, deposits/fees, utilities, pets, parking, furnishings, maintenance, entry, smoking, renewal, and special terms. Do not assume the Chicago Residential Landlord and Tenant Ordinance applies; flag applicability for legal review.
+For vehicle rentals, ask vehicle details, renter/owner identity, rental dates, mileage, fuel/charging, price, deposit, insurance, damage, roadside assistance, prohibited use, return, late fees, and jurisdiction. For business agreements, ask the parties, scope/deliverables, payment, term, ownership/IP, confidentiality, warranties, liability, termination, dispute venue, and governing law. Adapt the questions to other document types instead of using a fixed checklist.
+When enough information is available, return status draft_ready and produce a complete, well-structured documentContent with headings and clauses. Use explicit placeholders only for genuinely optional items and list them in complianceNotes. For legal documents, include a short review note in complianceNotes that the draft is not legal advice, must be checked against current local/state/federal law, and should be reviewed by a licensed attorney before signing. Do not claim the document is legally compliant or enforceable. Keep reply concise but helpful. Never return markdown fences around the JSON.`
 
 const capabilityGuidance = getCapabilitySummary().capabilities
   .map((capability) => `${capability.id}: ${capability.status}`)
@@ -628,6 +744,56 @@ app.post('/api/storage/share', async (request, response) => {
   }
 })
 
+app.get('/api/workspace', async (request, response) => {
+  try {
+    const { admin, user } = await getSupabaseUser(request)
+    const { data: files, error: filesError } = await admin.storage.from('pdfs').list(user.id, {
+      limit: 100,
+      sortBy: { column: 'created_at', order: 'desc' },
+    })
+    if (filesError) throw filesError
+    const allFiles = await Promise.all((files || []).filter((file) => file.name !== '.emptyFolderPlaceholder').map(async (file) => {
+      const path = `${user.id}/${file.name}`
+      const signed = await admin.storage.from('pdfs').createSignedUrl(path, 3600)
+      return {
+        name: file.name,
+        path,
+        size: file.metadata?.size || 0,
+        createdAt: file.created_at,
+        signedUrl: signed.data?.signedUrl || null,
+        isSignedCopy: /-signed(?:-|\.)/i.test(file.name),
+      }
+    }))
+    let requestRows = []
+    let signatureTableConfigured = true
+    const { data: loadedRequestRows, error: requestsError } = await admin.from('signature_requests').select('id,document_name,workflow_type,recipient_email,recipient_name,status,expires_at,created_at,sent_at,viewed_at,signed_at,message,metadata').eq('owner_id', user.id).order('created_at', { ascending: false })
+    if (requestsError && signatureRequestError(requestsError)) {
+      signatureTableConfigured = false
+      console.warn('[workspace-list] signature_requests migration is not available yet')
+    } else if (requestsError) {
+      throw requestsError
+    } else {
+      requestRows = loadedRequestRows || []
+    }
+    const requests = await Promise.all((requestRows || []).map(async (item) => {
+      const signedDocumentPath = item.metadata?.signedDocumentPath || null
+      const signed = signedDocumentPath ? await admin.storage.from('pdfs').createSignedUrl(signedDocumentPath, 3600) : null
+      return { ...item, signedDocumentPath, signedDocumentUrl: signed?.data?.signedUrl || null }
+    }))
+    response.json({
+      files: allFiles,
+      signedFiles: allFiles.filter((item) => item.isSignedCopy),
+      signedSignatureRequests: requests.filter((item) => item.status === 'signed'),
+      pendingSignatures: requests.filter((item) => ['pending', 'viewed'].includes(item.status)),
+      signatureRequests: requests,
+      signatureTableConfigured,
+    })
+  } catch (error) {
+    console.error('[workspace-list]', error?.message || error)
+    response.status(signatureRequestError(error) ? 503 : error?.status || 500).json({ error: signatureRequestError(error) ? 'İmza tabloları henüz Supabase içinde oluşturulmamış.' : error?.status === 401 ? error.message : 'Workspace dosyaları listelenemedi.' })
+  }
+})
+
 app.post('/api/signatures/request', async (request, response) => {
   try {
     const { admin, user } = await getSupabaseUser(request)
@@ -688,6 +854,53 @@ app.post('/api/signatures/request', async (request, response) => {
         : error?.code === 'EMAIL_PROVIDER_ERROR'
           ? 'Resend e-posta gönderimini reddetti; domain ve sender ayarlarını kontrol et.'
           : 'İmza isteği oluşturulamadı.'
+    response.status(status).json({ error: message })
+  }
+})
+
+app.post('/api/signatures/:id/resend', requireAuth, async (request, response) => {
+  try {
+    const { admin, user } = request.supabaseContext
+    const { data, error } = await admin.from('signature_requests').select('id,owner_id,document_path,document_name,workflow_type,recipient_email,recipient_name,message,status,expires_at,metadata').eq('id', request.params.id).eq('owner_id', user.id).maybeSingle()
+    if (error) throw error
+    if (!data) return response.status(404).json({ error: 'İmza isteği bulunamadı.' })
+    if (['signed', 'declined', 'cancelled'].includes(data.status)) return response.status(409).json({ error: 'Bu istek tekrar gönderilemez.' })
+    const signedSource = await admin.storage.from('pdfs').createSignedUrl(data.document_path, 3600)
+    if (signedSource.error || !signedSource.data?.signedUrl) return response.status(404).json({ error: 'İmza istenen PDF cloud storage içinde bulunamadı.' })
+    const requestedExpiry = Number(request.body?.expiresIn || 604800)
+    const expiresIn = Math.min(Math.max(Number.isFinite(requestedExpiry) ? requestedExpiry : 604800, 3600), 2592000)
+    const rawToken = randomBytes(32).toString('hex')
+    const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString()
+    const reviewUrl = `${publicAppOrigin}/review/${rawToken}`
+    const title = data.workflow_type === 'review' ? 'PDF review request' : 'PDF signature request'
+    const greeting = `Hello ${escapeHtml(data.recipient_name || data.recipient_email)},`
+    const bodyText = data.message ? `<p>${escapeHtml(data.message)}</p>` : ''
+    const sentAt = new Date().toISOString()
+    const { error: updateError } = await admin.from('signature_requests').update({ token_hash: hashAccessToken(rawToken), status: 'pending', expires_at: expiresAt, sent_at: sentAt, viewed_at: null }).eq('id', data.id).eq('owner_id', user.id)
+    if (updateError) throw updateError
+    const emailResult = await sendResendEmail({
+      to: data.recipient_email,
+      subject: `${title}: ${data.document_name}`,
+      replyTo: process.env.EMAIL_FROM,
+      html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#182238"><p>${greeting}</p>${bodyText}<p><strong>${escapeHtml(user.user_metadata?.full_name || user.email || '')}</strong> sent you a new ${data.workflow_type === 'review' ? 'review' : 'signature'} request for <strong>${escapeHtml(data.document_name)}</strong>.</p><p><a href="${escapeHtml(reviewUrl)}" style="display:inline-block;padding:12px 18px;background:#e45235;color:#fff;text-decoration:none;border-radius:8px">Open PDF</a></p><p>This link expires on ${escapeHtml(expiresAt)}.</p></div>`,
+      text: `${greeting.replaceAll('&lt;', '<').replaceAll('&gt;', '>')}\n\n${user.user_metadata?.full_name || user.email || 'The sender'} sent you a new ${data.workflow_type === 'review' ? 'review' : 'signature'} request for ${data.document_name}.\n${data.message || ''}\n\nOpen PDF: ${reviewUrl}\nExpires: ${expiresAt}`,
+    })
+    try {
+      await addAuditEvent(admin, { ownerId: user.id, requestId: data.id, eventType: 'request_resent', actorEmail: user.email, details: { recipientEmail: data.recipient_email, provider: 'resend', providerMessageId: emailResult.id || null, expiresAt } })
+    } catch (auditError) {
+      console.error('[signature-resend-audit]', auditError?.message || auditError)
+    }
+    response.json({ id: data.id, status: 'pending', expiresAt, reviewUrl, emailId: emailResult.id || null })
+  } catch (error) {
+    console.error('[signature-resend]', error?.message || error)
+    const status = error?.status || (signatureRequestError(error) ? 503 : error?.code === 'EMAIL_PROVIDER_ERROR' ? 502 : 500)
+    const message = signatureRequestError(error)
+      ? 'İmza tablosu henüz Supabase içinde oluşturulmamış.'
+      : error?.code === 'EMAIL_NOT_CONFIGURED'
+        ? 'Resend e-posta ayarları eksik.'
+        : error?.code === 'EMAIL_PROVIDER_ERROR'
+          ? 'Resend e-posta gönderimini reddetti; domain ve sender ayarlarını kontrol et.'
+          : 'İmza isteği tekrar gönderilemedi.'
     response.status(status).json({ error: message })
   }
 })
@@ -928,6 +1141,51 @@ app.get('/api/capabilities', (_request, response) => {
 })
 
 app.use('/api/ai', guestAiGuard)
+
+app.post('/api/ai/assistant', async (request, response) => {
+  const message = String(request.body?.message || '').trim().slice(0, 8000)
+  const conversation = Array.isArray(request.body?.conversation)
+    ? request.body.conversation.filter((item) => item && ['user', 'assistant'].includes(item.role) && typeof item.content === 'string').slice(-16)
+    : []
+  if (!message) return response.status(400).json({ error: 'Mesaj gerekli.' })
+  try {
+    const client = getClient()
+    const input = [
+      ...conversation.map((item) => ({ role: item.role, content: [{ type: item.role === 'assistant' ? 'output_text' : 'input_text', text: item.content.slice(0, 8000) }] })),
+      { role: 'user', content: [{ type: 'input_text', text: message }] },
+    ]
+    const result = await client.responses.create({
+      model: process.env.OPENAI_ASSISTANT_MODEL || process.env.OPENAI_MODEL || 'gpt-5.6',
+      reasoning: { effort: process.env.OPENAI_ASSISTANT_REASONING || 'high' },
+      store: false,
+      instructions: documentAssistantInstructions,
+      input,
+      text: {
+        format: {
+          type: 'json_schema',
+          name: 'document_assistant_response',
+          strict: true,
+          schema: documentAssistantSchema,
+        },
+      },
+    })
+    if (!result.output_text?.trim()) throw new Error('The document assistant returned an empty response.')
+    const assistantResult = JSON.parse(result.output_text)
+    let generatedPdf = null
+    let generatedFileName = null
+    if (assistantResult.status === 'draft_ready' && assistantResult.documentContent?.trim()) {
+      const title = assistantResult.documentTitle || 'updateMyPDF document draft'
+      const pdfBytes = await createTextPdfBuffer(title, assistantResult.documentContent)
+      generatedPdf = pdfBytes.toString('base64')
+      generatedFileName = `${safeFileName(title).replace(/\.pdf$/i, '') || 'document-draft'}.pdf`
+    }
+    response.json({ ...assistantResult, generatedPdf, generatedFileName, model: process.env.OPENAI_ASSISTANT_MODEL || process.env.OPENAI_MODEL || 'gpt-5.6' })
+  } catch (error) {
+    console.error('[ai-assistant]', error?.message || error)
+    const status = error?.status === 401 ? 401 : 500
+    response.status(status).json({ error: status === 401 ? 'OpenAI API anahtarı geçersiz veya yetkisiz.' : `Belge asistanı yanıt veremedi${process.env.NODE_ENV === 'production' ? '.' : ` (${error?.message || 'unknown error'})`}` })
+  }
+})
 
 app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name: 'image', maxCount: 1 }]), async (request, response) => {
   const prompt = String(request.body?.prompt || '').trim()

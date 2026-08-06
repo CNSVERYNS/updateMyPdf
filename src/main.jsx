@@ -147,9 +147,11 @@ function App() {
   const [profileError, setProfileError] = useState('')
   const [toast, setToast] = useState(null)
   const [cloudFiles, setCloudFiles] = useState([])
+  const [workspaceRequests, setWorkspaceRequests] = useState([])
   const [showCloudFiles, setShowCloudFiles] = useState(false)
   const [isCloudSaving, setIsCloudSaving] = useState(false)
   const [currentCloudPath, setCurrentCloudPath] = useState('')
+  const [assistantQuestions, setAssistantQuestions] = useState([])
   const [showSignatureRequest, setShowSignatureRequest] = useState(false)
   const [showSignatureRequests, setShowSignatureRequests] = useState(false)
   const [signatureRequestBusy, setSignatureRequestBusy] = useState(false)
@@ -213,10 +215,11 @@ function App() {
 
   const loadCloudFiles = async () => {
     if (!session) return
-    const result = await apiFetch('/api/storage/files', { headers: authHeaders() })
+    const result = await apiFetch('/api/workspace', { headers: authHeaders() })
     const data = await result.json().catch(() => ({}))
-    if (!result.ok) throw new Error(data.error || 'Cloud dosyaları okunamadı.')
+    if (!result.ok) throw new Error(data.error || 'Workspace dosyaları okunamadı.')
     setCloudFiles(data.files || [])
+    setWorkspaceRequests(data.signatureRequests || [])
   }
 
   const openAuthPrompt = () => {
@@ -382,6 +385,15 @@ function App() {
     const data = await result.json().catch(() => ({}))
     if (!result.ok) throw new Error(data.error || 'İmza isteği iptal edilemedi.')
     setToast({ tone: 'success', text: 'İmza isteği iptal edildi.' })
+    setWorkspaceRequests((current) => current.map((item) => item.id === requestId ? { ...item, status: 'cancelled' } : item))
+  }
+
+  const resendSignatureRequest = async (requestId) => {
+    const result = await apiFetch(`/api/signatures/${encodeURIComponent(requestId)}/resend`, { method: 'POST', headers: authHeaders() })
+    const data = await result.json().catch(() => ({}))
+    if (!result.ok) throw new Error(data.error || 'İmza isteği tekrar gönderilemedi.')
+    setWorkspaceRequests((current) => current.map((item) => item.id === requestId ? { ...item, status: 'pending', expires_at: data.expiresAt, sent_at: new Date().toISOString() } : item))
+    setToast({ tone: 'success', text: 'Yeni e-imza bağlantısı gönderildi.' })
   }
 
   const openCloudFiles = async () => {
@@ -453,6 +465,7 @@ function App() {
       },
     ])
     setChanges([])
+    setAssistantQuestions([])
   }
 
   const handleFileChange = (event) => {
@@ -568,7 +581,7 @@ function App() {
   const submitPrompt = async (prompt = input) => {
     const cleanPrompt = prompt.trim()
     if (!cleanPrompt || isThinking) return
-    if (!session && guestPromptCount >= 1) {
+    if (!session && guestPromptCount >= 1 && file) {
       setShowAccountNudge(true)
       return
     }
@@ -577,16 +590,38 @@ function App() {
     setInput('')
     setIsThinking(true)
 
-    if (!file) {
-      setMessages((current) => [
-        ...current,
-        { id: Date.now() + 1, role: 'assistant', text: 'Gerçek AI düzenlemesi için önce bir PDF yüklemelisin.' },
-      ])
-      setIsThinking(false)
-      return
-    }
-
     try {
+      if (!file) {
+        const assistantResponse = await apiFetch('/api/ai/assistant', { method: 'POST', headers: { ...authHeaders(), 'Content-Type': 'application/json' }, body: JSON.stringify({ message: cleanPrompt, conversation: messages.slice(-16).map((item) => ({ role: item.role, content: item.text })) }) })
+        const assistantRaw = await assistantResponse.text()
+        let assistantData = {}
+        try {
+          assistantData = assistantRaw ? JSON.parse(assistantRaw) : {}
+        } catch {
+          throw new Error(`Belge asistanı geçerli bir JSON cevabı döndürmedi (${assistantResponse.status}).`)
+        }
+        if (!assistantResponse.ok) throw new Error(assistantData.error || 'Belge asistanı yanıt veremedi.')
+        setAssistantQuestions(assistantData.questions || [])
+        let assistantText = assistantData.reply || 'Belge akışını hazırlıyorum.'
+        if (assistantData.generatedPdf) {
+          setAssistantQuestions([])
+          const generatedFile = decodePdfFile(assistantData.generatedPdf, assistantData.generatedFileName || 'document-draft.pdf')
+          setFile(generatedFile)
+          setOriginalFile(generatedFile)
+          setFileUrl(URL.createObjectURL(generatedFile))
+          setPdfTitle(assistantData.documentTitle || generatedFile.name)
+          setPageCount(0)
+          const infoFormData = new FormData()
+          infoFormData.append('file', generatedFile)
+          apiFetch('/api/pdf/info', { method: 'POST', headers: authHeaders(), body: infoFormData }).then((infoResponse) => infoResponse.ok ? infoResponse.json() : null).then((info) => { if (info?.pageCount) setPageCount(info.pageCount) }).catch(() => {})
+          assistantText += '\n\nPDF taslağını hazırladım. İstersen şimdi düzenleyebilir, cloud’a kaydedebilir veya imzaya gönderebilirsin.'
+          if (assistantData.complianceNotes?.length) assistantText += `\n\nNotlar:\n${assistantData.complianceNotes.join('\n')}`
+          if (!session) recordGuestPrompt()
+        }
+        setMessages((current) => [...current, { id: Date.now() + 1, role: 'assistant', text: assistantText }])
+        setAiStatus('live')
+        return
+      }
       const formData = new FormData()
       formData.append('prompt', cleanPrompt)
       formData.append('file', file)
@@ -619,6 +654,7 @@ function App() {
           .catch(() => {})
       }
       if (imageFile) setImageFile(null)
+      setAssistantQuestions([])
       const officeExports = data.officeExports || []
       officeExports.forEach((officeFile) => downloadBase64File(officeFile.data, officeFile.fileName, exportMimeTypes[officeFile.format] || 'application/octet-stream'))
       const imageExports = data.imageExports || []
@@ -811,7 +847,7 @@ function App() {
               <div className="ai-avatar"><Sparkles size={16} /></div>
               <div><h1>AI assistant</h1><p><span className={`online-dot ${aiStatus === 'error' ? 'error' : ''}`} /> {aiStatus === 'live' ? 'Live AI connected' : aiStatus === 'error' ? 'Connection issue' : 'Ready to edit'}</p></div>
             </div>
-            <button className="icon-button light" title="Sohbeti temizle" onClick={() => setMessages(initialMessages)}><Trash2 size={16} /></button>
+            <button className="icon-button light" title="Sohbeti temizle" onClick={() => { setMessages(initialMessages); setAssistantQuestions([]) }}><Trash2 size={16} /></button>
           </div>
 
           <div className="chat-body">
@@ -827,6 +863,7 @@ function App() {
                 <div className="message-bubble thinking"><span /><span /><span /></div>
               </div>
             )}
+            {!file && assistantQuestions.length > 0 && <AssistantQuestionsCard questions={assistantQuestions} onSubmit={(answers) => submitPrompt(answers)} disabled={isThinking} />}
             <div ref={chatEndRef} />
           </div>
 
@@ -863,9 +900,9 @@ function App() {
       {showHistory && <HistoryDrawer changes={changes} onClose={() => setShowHistory(false)} />}
       {showCapabilities && <CapabilitiesDrawer summary={capabilitySummary} onClose={() => setShowCapabilities(false)} />}
       {showComparison && <ComparisonDrawer comparison={comparison} onClose={() => setShowComparison(false)} />}
-      {showCloudFiles && <CloudFilesDrawer files={cloudFiles} onClose={() => setShowCloudFiles(false)} onOpen={downloadCloudFile} onDelete={deleteCloudFile} onShare={shareCloudFile} />}
+      {showCloudFiles && <CloudFilesDrawer files={cloudFiles} signatureRequests={workspaceRequests} onClose={() => setShowCloudFiles(false)} onOpen={downloadCloudFile} onDelete={deleteCloudFile} onShare={shareCloudFile} onResend={resendSignatureRequest} onCancel={cancelSignatureRequest} />}
       {showSignatureRequest && <SignatureRequestModal busy={signatureRequestBusy} error={signatureRequestError} result={signatureRequestResult} documentName={file?.name} senderName={session?.user?.user_metadata?.full_name || session?.user?.email} senderEmail={session?.user?.email} pageCount={pageCount} currentPage={currentPage} onClose={() => setShowSignatureRequest(false)} onSubmit={createSignatureRequest} onOpenRequests={() => { setShowSignatureRequest(false); setShowSignatureRequests(true) }} />}
-      {showSignatureRequests && <SignatureRequestsDrawer session={session} authHeaders={authHeaders} onClose={() => setShowSignatureRequests(false)} onCancel={cancelSignatureRequest} />}
+      {showSignatureRequests && <SignatureRequestsDrawer session={session} authHeaders={authHeaders} onClose={() => setShowSignatureRequests(false)} onCancel={cancelSignatureRequest} onResend={resendSignatureRequest} />}
       {showAuth && <AuthModal mode={authMode} busy={authBusy} error={authError} onModeChange={(mode) => { setAuthMode(mode); setAuthError('') }} onClose={() => setShowAuth(false)} onSubmit={handleAuthSubmit} />}
       {showAccount && session && <AccountModal session={session} busy={profileBusy} error={profileError} onClose={() => setShowAccount(false)} onSubmit={handleProfileSave} onOpenPricing={() => { setShowAccount(false); setShowPricing(true) }} />}
       {showAccountNudge && !session && <AccountNudge onClose={() => setShowAccountNudge(false)} onSignup={openAuthPrompt} onPricing={() => setShowPricing(true)} />}
@@ -892,6 +929,37 @@ function DemoDocument({ change, style }) {
       {change?.badge === 'Özet' && <div className="summary-card"><Sparkles size={13} /><span><b>AI summary</b> Product clarity and user needs are the central themes of this document.</span></div>}
       <div className="doc-footer"><span>ACME STUDIO</span><span>01</span></div>
     </div>
+  )
+}
+
+function AssistantQuestionsCard({ questions, onSubmit, disabled }) {
+  const [values, setValues] = useState({})
+  const [error, setError] = useState('')
+  const questionKey = questions.map((question) => question.id).join('|')
+
+  useEffect(() => {
+    setValues({})
+    setError('')
+  }, [questionKey])
+
+  const submit = (event) => {
+    event.preventDefault()
+    const missing = questions.find((question) => question.required && !String(values[question.id] || '').trim())
+    if (missing) {
+      setError(`${missing.label} alanını doldurmalısın.`)
+      return
+    }
+    setError('')
+    onSubmit(questions.map((question) => `${question.label}: ${String(values[question.id] || '').trim() || 'Belirtilmedi'}`).join('\n'))
+  }
+
+  return (
+    <form className="assistant-question-card" onSubmit={submit}>
+      <div className="assistant-question-heading"><Sparkles size={13} /><strong>Belge bilgileri</strong><span>AI’nin taslağı doğru hazırlaması için</span></div>
+      {questions.map((question) => <label key={question.id}>{question.label}{question.required && <sup>*</sup>}{question.kind === 'select' ? <select value={values[question.id] || ''} onChange={(event) => setValues((current) => ({ ...current, [question.id]: event.target.value }))}><option value="">Seç</option>{(question.options || []).map((option) => <option value={option} key={option}>{option}</option>)}</select> : question.kind === 'textarea' ? <textarea value={values[question.id] || ''} onChange={(event) => setValues((current) => ({ ...current, [question.id]: event.target.value }))} placeholder={question.question} rows={2} /> : <input type={question.kind === 'date' || question.kind === 'number' || question.kind === 'email' ? question.kind : 'text'} value={values[question.id] || ''} onChange={(event) => setValues((current) => ({ ...current, [question.id]: event.target.value }))} placeholder={question.question} />}{question.help && <small>{question.help}</small>}</label>)}
+      {error && <div className="assistant-question-error">{error}</div>}
+      <button type="submit" className="assistant-question-submit" disabled={disabled}>{disabled ? <LoaderCircle className="spin" size={14} /> : <ArrowUp size={14} />} Yanıtları gönder</button>
+    </form>
   )
 }
 
@@ -969,16 +1037,40 @@ function ComparisonDrawer({ comparison, onClose }) {
   )
 }
 
-function CloudFilesDrawer({ files, onClose, onOpen, onDelete, onShare }) {
+function CloudFilesDrawer({ files, signatureRequests, onClose, onOpen, onDelete, onShare, onResend, onCancel }) {
   const [error, setError] = useState('')
+  const [tab, setTab] = useState('all')
+  const [busyId, setBusyId] = useState('')
+  const signedFiles = (files || []).filter((file) => file.isSignedCopy)
+  const signedRequests = (signatureRequests || []).filter((request) => request.status === 'signed' && !request.signedDocumentPath)
+  const pendingRequests = (signatureRequests || []).filter((request) => ['pending', 'viewed'].includes(request.status))
+
+  const runRequestAction = async (request, action) => {
+    setBusyId(request.id)
+    setError('')
+    try {
+      await action(request.id)
+      if (tab === 'pending') setTab('pending')
+    } catch (actionError) {
+      setError(actionError.message || 'İşlem tamamlanamadı.')
+    } finally {
+      setBusyId('')
+    }
+  }
+
   return (
     <aside className="history-drawer cloud-files-drawer">
       <div className="history-heading">
-        <div><span>PRIVATE STORAGE</span><h2>Cloud dosyaları</h2></div>
+        <div><span>UPDATEMYPDF WORKSPACE</span><h2>Dosya merkezi</h2></div>
         <button className="icon-button light" onClick={onClose}><X size={17} /></button>
       </div>
+      <div className="workspace-tabs">
+        <button className={tab === 'all' ? 'active' : ''} onClick={() => setTab('all')}>Tüm dosyalar <span>{files.length}</span></button>
+        <button className={tab === 'signed' ? 'active' : ''} onClick={() => setTab('signed')}>İmzalanan <span>{signedFiles.length + signedRequests.length}</span></button>
+        <button className={tab === 'pending' ? 'active' : ''} onClick={() => setTab('pending')}>İmza bekleyen <span>{pendingRequests.length}</span></button>
+      </div>
       {error && <div className="auth-error inline-error">{error}</div>}
-      {files.length === 0 ? <div className="history-empty"><Cloud size={20} /><p>Henüz cloud dosyan yok.</p></div> : <div className="cloud-file-list">
+      {tab === 'all' && (files.length === 0 ? <div className="history-empty"><Cloud size={20} /><p>Henüz cloud dosyan yok.</p></div> : <div className="cloud-file-list">
         {files.map((file) => (
           <div className="cloud-file-item" key={file.path}>
             <FileText size={16} />
@@ -988,7 +1080,14 @@ function CloudFilesDrawer({ files, onClose, onOpen, onDelete, onShare }) {
             <button className="icon-button light" title="Cloud’dan sil" onClick={async () => { try { await onDelete(file) } catch (deleteError) { setError(deleteError.message || 'Dosya silinemedi.') } }}><Trash2 size={15} /></button>
           </div>
         ))}
-      </div>}
+      </div>)}
+      {tab === 'signed' && (signedFiles.length + signedRequests.length === 0 ? <div className="history-empty"><Check size={20} /><p>Henüz imzalanmış bir dosya yok.</p></div> : <div className="cloud-file-list workspace-request-list">
+        {signedFiles.map((file) => <div className="cloud-file-item workspace-request-item" key={file.path}><FileText size={16} /><div className="cloud-file-copy"><strong>{file.name}</strong><span>Cloud imzalı kopya · {new Date(file.createdAt).toLocaleString()}</span><button type="button" className="signed-document-link signed-document-button" onClick={() => onOpen(file)}>İmzalı PDF’i aç</button></div><em className="request-status signed">signed</em></div>)}
+        {signedRequests.map((request) => <div className="cloud-file-item workspace-request-item" key={request.id}><FileText size={16} /><div className="cloud-file-copy"><strong>{request.document_name}</strong><span>{request.recipient_name || request.recipient_email} · {new Date(request.signed_at || request.created_at).toLocaleString()}</span>{request.signedDocumentUrl && <a className="signed-document-link" href={request.signedDocumentUrl} target="_blank" rel="noreferrer">İmzalı PDF’i aç</a>}</div><em className="request-status signed">signed</em></div>)}
+      </div>)}
+      {tab === 'pending' && (pendingRequests.length === 0 ? <div className="history-empty"><PenLine size={20} /><p>Bekleyen imza talebi yok.</p></div> : <div className="cloud-file-list workspace-request-list">
+        {pendingRequests.map((request) => <div className="cloud-file-item workspace-request-item" key={request.id}><FileText size={16} /><div className="cloud-file-copy"><strong>{request.document_name}</strong><span>{request.recipient_name || request.recipient_email} · {request.status}</span><small>Son geçerlilik: {new Date(request.expires_at).toLocaleString()}</small></div><div className="workspace-request-actions"><button type="button" className="signature-resend-button" onClick={() => runRequestAction(request, onResend)} disabled={busyId === request.id}>{busyId === request.id ? <LoaderCircle className="spin" size={12} /> : 'Resend'}</button><button type="button" className="signature-cancel-button" onClick={() => { if (window.confirm('Bu imza isteğini iptal etmek istediğine emin misin?')) runRequestAction(request, onCancel) }} disabled={busyId === request.id}>İptal</button></div></div>)}
+      </div>)}
     </aside>
   )
 }
@@ -1064,11 +1163,12 @@ function SignatureRequestModal({ busy, error, result, documentName, senderName, 
   )
 }
 
-function SignatureRequestsDrawer({ session, authHeaders, onClose, onCancel }) {
+function SignatureRequestsDrawer({ session, authHeaders, onClose, onCancel, onResend }) {
   const [requests, setRequests] = useState([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(true)
   const [cancellingId, setCancellingId] = useState('')
+  const [resendingId, setResendingId] = useState('')
 
   useEffect(() => {
     if (!session) return undefined
@@ -1098,12 +1198,25 @@ function SignatureRequestsDrawer({ session, authHeaders, onClose, onCancel }) {
     }
   }
 
+  const resendRequest = async (request) => {
+    setResendingId(request.id)
+    setError('')
+    try {
+      await onResend(request.id)
+      setRequests((current) => current.map((item) => item.id === request.id ? { ...item, status: 'pending' } : item))
+    } catch (resendError) {
+      setError(resendError.message || 'İmza isteği tekrar gönderilemedi.')
+    } finally {
+      setResendingId('')
+    }
+  }
+
   return (
     <aside className="history-drawer signature-requests-drawer">
       <div className="history-heading"><div><span>PDF WORKFLOW</span><h2>İmza talepleri</h2></div><button className="icon-button light" onClick={onClose}><X size={17} /></button></div>
       {error && <div className="auth-error inline-error">{error}</div>}
       {loading ? <div className="history-empty"><LoaderCircle className="spin" size={20} /><p>Talepler yükleniyor...</p></div> : requests.length === 0 ? <div className="history-empty"><PenLine size={20} /><p>Henüz bir imza talebi yok.</p></div> : <div className="signature-request-list">
-        {requests.map((request) => <div className="signature-request-item" key={request.id}><div className="signature-request-main"><strong>{request.document_name}</strong><span>{request.recipient_name || request.recipient_email}</span><small>{request.workflow_type === 'review' ? 'İnceleme' : 'İmza'} · {new Date(request.created_at).toLocaleString()}</small>{request.signedDocumentUrl && <a className="signed-document-link" href={request.signedDocumentUrl} target="_blank" rel="noreferrer">İmzalı PDF’i aç</a>}</div><div className="signature-request-actions"><em className={`request-status ${request.status}`}>{request.status}</em>{['pending', 'viewed'].includes(request.status) && <button className="signature-cancel-button" type="button" onClick={() => cancelRequest(request)} disabled={cancellingId === request.id}>{cancellingId === request.id ? <LoaderCircle className="spin" size={12} /> : 'İptal et'}</button>}</div></div>)}
+        {requests.map((request) => <div className="signature-request-item" key={request.id}><div className="signature-request-main"><strong>{request.document_name}</strong><span>{request.recipient_name || request.recipient_email}</span><small>{request.workflow_type === 'review' ? 'İnceleme' : 'İmza'} · {new Date(request.created_at).toLocaleString()}</small>{request.signedDocumentUrl && <a className="signed-document-link" href={request.signedDocumentUrl} target="_blank" rel="noreferrer">İmzalı PDF’i aç</a>}</div><div className="signature-request-actions"><em className={`request-status ${request.status}`}>{request.status}</em>{['pending', 'viewed'].includes(request.status) && <><button className="signature-resend-button" type="button" onClick={() => resendRequest(request)} disabled={resendingId === request.id}>{resendingId === request.id ? <LoaderCircle className="spin" size={12} /> : 'Resend'}</button><button className="signature-cancel-button" type="button" onClick={() => cancelRequest(request)} disabled={cancellingId === request.id}>İptal et</button></>}</div></div>)}
       </div>}
     </aside>
   )
