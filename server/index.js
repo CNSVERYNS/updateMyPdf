@@ -1918,7 +1918,8 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
     })
     content.push({ type: 'input_text', text: prompt })
     const commandInstructions = translationMode
-      ? `${systemInstructions}\n\nTranslation mode: the user explicitly requested a full-document translation into ${targetLanguageHint}. Do not answer that translation is unnecessary unless every extracted page is genuinely already in ${targetLanguageHint}. The extracted text is grouped by page. Return exactly one translate action for each page that contains text: use the complete original page text in text, the complete translated page text in replacement, and the exact page number. Never return overlapping, duplicate, or per-line actions. Return only the fields allowed by the translation schema; never add null fields, commentary, or unsupported action types.`
+      ? `You are a professional document translator inside a PDF editor. The user explicitly requested a complete translation into ${targetLanguageHint}.
+Translate every piece of prose on every page. Never summarize, shorten, paraphrase, omit sentences, omit paragraphs, or say that translation is unnecessary. Preserve names, numbers, dates, headings, labels, punctuation, and the order of the content. The source text is grouped by page and its line breaks represent the original visual layout. For each page, return exactly one translate action. The replacement must contain the COMPLETE translation of that page and must preserve the same line-break structure as the source as closely as possible. If a page is already partly in ${targetLanguageHint}, keep the existing target-language text but translate all other text. Never skip the final page. Return only the compact translation JSON schema fields; do not return explanations, summaries, or null fields.`
       : systemInstructions
     const planRequest = {
       model: pdfEditorModel(),
@@ -1952,24 +1953,51 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
       return { ...candidate, actions }
     }
     let plan = normalizeTranslationPlan(JSON.parse(result.output_text))
-    const expectedPages = extractedTranslationPages.map((page) => page.page)
-    const translationActions = Array.isArray(plan.actions) ? plan.actions.filter((action) => action?.type === 'translate' && String(action.text || '').trim() && String(action.replacement || '').trim()) : []
-    const hasAllTranslationPages = !expectedPages.length || expectedPages.every((page) => translationActions.some((action) => action.page === page))
-    const translationNoOp = translationMode && (!hasAllTranslationPages || !translationActions.length || translationActions.every((action) => String(action.text).trim() === String(action.replacement).trim()))
-    if (translationNoOp) {
-      result = await client.responses.create({
-        ...planRequest,
-        instructions: `${commandInstructions}\n\nHARD REQUIREMENT: Do not return assistant text saying the document is already English. Return one actual translate action per extracted page now. The target language is the language explicitly named by the user. Preserve names and numbers, but translate all non-target-language prose.`,
-      }, { timeout: 180000 })
-      if (!result.output_text?.trim()) throw new Error('The translation planner returned an empty response.')
-      plan = normalizeTranslationPlan(JSON.parse(result.output_text))
+    const translationPlanNeedsRetry = (candidate) => {
+      if (!translationMode) return false
+      const expectedPages = extractedTranslationPages.map((page) => page.page)
+      const actions = Array.isArray(candidate.actions) ? candidate.actions.filter((action) => action?.type === 'translate' && String(action.text || '').trim() && String(action.replacement || '').trim()) : []
+      const hasAllPages = !expectedPages.length || expectedPages.every((page) => actions.some((action) => action.page === page))
+      const isNoOp = !actions.length || actions.every((action) => String(action.text).trim() === String(action.replacement).trim())
+      const isIncomplete = extractedTranslationPages.some((page) => {
+        const action = actions.find((candidateAction) => candidateAction.page === page.page)
+        if (!action) return false
+        const replacement = String(action.replacement || '').trim()
+        const sourceLineCount = Array.isArray(page.lines) ? page.lines.length : 0
+        const replacementLineCount = replacement.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).length
+        const lineStructureLost = sourceLineCount > 6 && replacementLineCount < Math.max(2, Math.floor(sourceLineCount * 0.55))
+        const sourceSentenceCount = (page.text.match(/[.!?。！？]+/g) || []).length
+        const replacementSentenceCount = (replacement.match(/[.!?。！？]+/g) || []).length
+        const sentenceStructureLost = sourceSentenceCount > 5 && replacementSentenceCount < Math.max(2, Math.floor(sourceSentenceCount * 0.45))
+        return (page.text.length > 160 && replacement.length < page.text.length * 0.45) || lineStructureLost || sentenceStructureLost
+      })
+      return !hasAllPages || isNoOp || isIncomplete
     }
-    if (translationMode) {
-      const finalTranslationActions = Array.isArray(plan.actions) ? plan.actions.filter((action) => action?.type === 'translate' && String(action.text || '').trim() && String(action.replacement || '').trim()) : []
-      if (!finalTranslationActions.length || finalTranslationActions.every((action) => String(action.text).trim() === String(action.replacement).trim())) {
-        throw new Error('Translation planner returned no actual translation actions.')
+    if (translationPlanNeedsRetry(plan)) {
+      const pagePlans = await Promise.all(extractedTranslationPages.map(async (page) => {
+        const pageSource = (page.lines?.length ? page.lines : [page.text]).join('\n')
+        const pageResult = await client.responses.create({
+          ...planRequest,
+          instructions: `You are translating exactly one PDF page for a production document editor. Translate the complete source page into ${targetLanguageHint}. Never summarize, shorten, omit, or rewrite away content. Keep every heading, label, paragraph, sentence, name, number, date, and punctuation. Preserve the source line breaks and return the same number of non-empty lines whenever possible. Return exactly one translate action for page ${page.page}; its text must be the source page and its replacement must be the complete translation. Return no other action and no explanation.\n\nSOURCE PAGE ${page.page}:\n${pageSource}`,
+          input: [{
+            role: 'user',
+            content: [{ type: 'input_text', text: `Translate this complete page into ${targetLanguageHint}.\n\n${pageSource}` }],
+          }],
+          max_output_tokens: 16000,
+        }, { timeout: 180000 })
+        if (!pageResult.output_text?.trim()) throw new Error(`Translation for page ${page.page} was empty.`)
+        const pagePlan = JSON.parse(pageResult.output_text)
+        const action = Array.isArray(pagePlan.actions) ? pagePlan.actions.find((candidate) => candidate?.type === 'translate') : null
+        if (!action?.replacement?.trim()) throw new Error(`Translation for page ${page.page} was incomplete.`)
+        return { ...action, type: 'translate', page: page.page, text: page.text }
+      }))
+      plan = {
+        assistantMessage: 'Belgenin tüm sayfaları çevrildi.',
+        summary: 'Tam çeviri; sayfa düzeni ve satır yapısı korunarak uygulandı.',
+        actions: pagePlans,
       }
     }
+    if (translationPlanNeedsRetry(plan)) throw new Error('Tam çeviri planı eksik döndü; belge değiştirilmedi. Lütfen aynı isteği tekrar dene.')
     const removePasswordAction = plan.actions.find((action) => action.type === 'remove_password')
     const executorActions = removePasswordAction ? plan.actions.filter((action) => action.type !== 'remove_password') : plan.actions
     const editableSource = removePasswordAction ? await decryptPdfBuffer(sourceFile.buffer, removePasswordAction.password || '') : sourceFile.buffer
