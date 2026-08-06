@@ -1,6 +1,6 @@
 import { readFileSync, existsSync } from 'node:fs'
 import fontkit from '@pdf-lib/fontkit'
-import { PDFArray, PDFBool, PDFDocument, PDFDict, PDFName, PDFNumber, PDFString, StandardFonts, degrees, rgb } from 'pdf-lib'
+import { beginText, endText, PDFArray, PDFBool, PDFDocument, PDFDict, PDFName, PDFNumber, PDFString, popGraphicsState, pushGraphicsState, setCharacterSqueeze, setFillingColor, setFontAndSize, setTextMatrix, showText, StandardFonts, degrees, rgb } from 'pdf-lib'
 import * as pdfjsLib from 'pdfjs-dist/legacy/build/pdf.mjs'
 import { redactPdfBuffer } from './pdf-render.js'
 
@@ -152,22 +152,81 @@ const groupMatchedTextLines = (matches) => {
     })
 }
 
-const distributeTranslatedLines = (replacement, sourceLines) => {
+const sourceLineWidth = (sourceLine, pageWidth) => Math.max(24, Math.min(pageWidth - Math.max(6, sourceLine.x - 2) - 6, sourceLine.right - sourceLine.x + 4))
+
+const layoutTokens = (replacement) => {
+  const value = String(replacement || '').replace(/\r/g, '').trim()
+  if (!value) return []
+  if (/\s/.test(value)) return value.replace(/\s+/g, ' ').split(' ').filter(Boolean)
+  return Array.from(value)
+}
+
+const distributeTranslatedLines = (replacement, sourceLines, fonts, pageWidth) => {
   const rawLines = String(replacement || '').split(/\r?\n/).map((line) => line.trim())
   if (rawLines.length === sourceLines.length) return rawLines
-  const words = String(replacement || '').replace(/\s+/g, ' ').trim().split(' ').filter(Boolean)
-  if (!words.length) return sourceLines.map(() => '')
-  const sourceLength = sourceLines.reduce((sum, line) => sum + Math.max(1, line.text.length), 0)
-  let wordIndex = 0
-  return sourceLines.map((line, index) => {
-    const remainingLines = sourceLines.length - index - 1
-    if (index === sourceLines.length - 1) return words.slice(wordIndex).join(' ')
-    const desired = Math.max(1, Math.round(words.length * Math.max(1, line.text.length) / sourceLength))
-    const take = Math.min(desired, Math.max(1, words.length - wordIndex - remainingLines))
-    const result = words.slice(wordIndex, wordIndex + take).join(' ')
-    wordIndex += take
-    return result
+  const tokens = layoutTokens(replacement)
+  if (!tokens.length) return sourceLines.map(() => '')
+
+  let tokenIndex = 0
+  const lines = sourceLines.map((sourceLine, lineIndex) => {
+    const remainingSlots = sourceLines.length - lineIndex - 1
+    const font = fonts[lineIndex]
+    const maxWidth = Math.max(10, sourceLineWidth(sourceLine, pageWidth) - 2)
+    let line = ''
+
+    while (tokenIndex < tokens.length) {
+      const token = tokens[tokenIndex]
+      const candidate = line ? `${line} ${token}` : token
+      const candidateWidth = font.widthOfTextAtSize(candidate, sourceLine.size)
+      const tokensLeftAfter = tokens.length - tokenIndex - 1
+      if (line && candidateWidth > maxWidth) break
+      if (!line && candidateWidth > maxWidth && token.length > 1) {
+        let partial = ''
+        for (const character of Array.from(token)) {
+          const next = `${partial}${character}`
+          if (partial && font.widthOfTextAtSize(next, sourceLine.size) > maxWidth) break
+          partial = next
+        }
+        if (partial) {
+          line = partial
+          tokens[tokenIndex] = token.slice(partial.length)
+          if (!tokens[tokenIndex]) tokenIndex += 1
+        }
+        break
+      }
+      if (remainingSlots > 0 && tokensLeftAfter < remainingSlots) break
+      line = candidate
+      tokenIndex += 1
+    }
+
+    if (!line && tokenIndex < tokens.length) {
+      line = tokens[tokenIndex]
+      tokenIndex += 1
+    }
+    return line
   })
+  if (tokenIndex < tokens.length) {
+    const overflow = tokens.slice(tokenIndex).join(/\s/.test(String(replacement || '')) ? ' ' : '')
+    lines[lines.length - 1] = `${lines[lines.length - 1]}${lines[lines.length - 1] ? ' ' : ''}${overflow}`.trim()
+  }
+  return lines
+}
+
+const drawFittedText = (pdfPage, text, { x, y, size, font, maxWidth, color }) => {
+  if (!text) return
+  const naturalWidth = font.widthOfTextAtSize(text, size)
+  const squeeze = naturalWidth > maxWidth ? Math.max(10, (maxWidth / naturalWidth) * 100) : 100
+  pdfPage.pushOperators(
+    pushGraphicsState(),
+    beginText(),
+    setFillingColor(color),
+    setFontAndSize(font.name, size),
+    setCharacterSqueeze(squeeze),
+    setTextMatrix(1, 0, 0, 1, x, y),
+    showText(font.encodeText(text)),
+    endText(),
+    popGraphicsState(),
+  )
 }
 
 const translateTextBlock = async (pdfDocument, pagesWithText, action) => {
@@ -184,24 +243,25 @@ const translateTextBlock = async (pdfDocument, pagesWithText, action) => {
     const pageWidth = pdfPage.getWidth()
     const sourceLines = groupMatchedTextLines(matches)
     if (!sourceLines.length) continue
-    const translatedLines = distributeTranslatedLines(action.replacement, sourceLines)
+    const fonts = await Promise.all(sourceLines.map((sourceLine) => getFont(pdfDocument, {
+      ...action,
+      fontFamily: sourceLine.fontFamily,
+      fontWeight: sourceLine.fontWeight,
+      fontStyle: sourceLine.fontStyle,
+    })))
+    const translatedLines = distributeTranslatedLines(action.replacement, sourceLines, fonts, pageWidth)
     for (const [index, sourceLine] of sourceLines.entries()) {
       const translatedLine = translatedLines[index] || ''
       // Keep already-target-language lines untouched so their original color,
       // font, weight, and size remain intact (for example an English heading
       // inside an otherwise foreign-language page).
       if (normalizeText(sourceLine.text) === normalizeText(translatedLine)) continue
-      const font = await getFont(pdfDocument, {
-        ...action,
-        fontFamily: sourceLine.fontFamily,
-        fontWeight: sourceLine.fontWeight,
-        fontStyle: sourceLine.fontStyle,
-      })
+      const font = fonts[index]
       const left = Math.max(6, sourceLine.x - 2)
-      const width = Math.max(24, Math.min(pageWidth - left - 6, sourceLine.right - sourceLine.x + 4))
+      const width = sourceLineWidth(sourceLine, pageWidth)
       const fontSize = Math.max(1, sourceLine.size)
       pdfPage.drawRectangle({ x: left, y: Math.max(0, sourceLine.y - sourceLine.height * 0.35 - 2), width, height: Math.max(10, sourceLine.height * 1.45), color: rgb(1, 1, 1), opacity: 1 })
-      if (translatedLine) pdfPage.drawText(translatedLine, { x: left + 1, y: sourceLine.y, size: fontSize, font, color: rgb(0.08, 0.08, 0.08) })
+      drawFittedText(pdfPage, translatedLine, { x: left + 1, y: sourceLine.y, size: fontSize, font, maxWidth: width - 2, color: rgb(0.08, 0.08, 0.08) })
     }
   }
 
