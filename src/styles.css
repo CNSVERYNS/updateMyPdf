@@ -398,9 +398,9 @@ body { color: var(--text); background: var(--bg); }
 @media (max-width: 620px) { .signature-modal { max-height: calc(100vh - 12px); }.signer-list { grid-template-columns: 1fr; }.signature-placement-paper, .signature-placement-paper .pdf-preview-canvas-wrap { min-height: 300px; }.signature-placement-marker { min-width: 88px; min-height: 38px; }.signature-placement-help { max-width: 190px; line-height: 1.25; } }
 
 /* Keep the AI composer visible after a PDF adds messages to the chat. */
-.workspace > .chat-panel { min-height: 0; overflow: hidden; }
-.chat-body { min-height: 0; flex: 1 1 auto; }
-.chat-panel > .suggestions, .chat-panel > .composer-wrap { flex: 0 0 auto; }
+.workspace > .chat-panel { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto; min-height: 0; overflow: hidden; }
+.chat-body { min-width: 0; min-height: 0; overflow-y: auto; }
+.chat-panel > .suggestions, .chat-panel > .composer-wrap { min-width: 0; min-height: 0; }
 .signature-placement-paper { touch-action: none; user-select: none; }
 @media (min-width: 851px) { .workspace > .chat-panel { height: 100%; } }
 @media (max-width: 850px) {
