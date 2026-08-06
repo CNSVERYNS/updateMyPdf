@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
+  ArrowLeft,
   ArrowUp,
   Bell,
   Bot,
@@ -9,6 +10,7 @@ import {
   Cloud,
   CreditCard,
   Download,
+  ExternalLink,
   FilePlus2,
   FileText,
   History,
@@ -679,21 +681,10 @@ function App() {
   const unreadNotificationCount = notifications.filter((notification) => !readNotificationIds.includes(notification.id)).length
 
   const openNotification = async (notification) => {
-    const popup = window.open('', '_blank')
-    let signedDocumentUrl = notification.signedDocumentUrl
-    try {
-      const result = await apiFetch('/api/signatures', { headers: authHeaders() })
-      const data = await result.json().catch(() => ({}))
-      const latest = data.requests?.find((request) => request.id === notification.requestId)
-      if (latest?.signedDocumentUrl) signedDocumentUrl = latest.signedDocumentUrl
-      if (!signedDocumentUrl) throw new Error('İmzalı PDF bağlantısı artık kullanılamıyor.')
-      if (popup) popup.location.href = signedDocumentUrl
-      else window.open(signedDocumentUrl, '_blank', 'noopener,noreferrer')
-      setReadNotificationIds((current) => current.includes(notification.id) ? current : [...current, notification.id])
-    } catch (error) {
-      popup?.close()
-      setToast({ tone: 'error', text: error.message || 'İmzalı PDF açılamadı.' })
-    }
+    const documentId = encodeURIComponent(notification.requestId || '')
+    if (!documentId) return
+    window.open(`/document/${documentId}`, '_blank', 'noopener,noreferrer')
+    setReadNotificationIds((current) => current.includes(notification.id) ? current : [...current, notification.id])
   }
 
   const activeChange = changes[changes.length - 1]
@@ -1925,6 +1916,136 @@ function ToastNotice({ notification, onClose }) {
   )
 }
 
+function SignedDocumentPage({ requestId }) {
+  const [session, setSession] = useState(null)
+  const [document, setDocument] = useState(null)
+  const [emailTo, setEmailTo] = useState('')
+  const [emailMessage, setEmailMessage] = useState('')
+  const [showEmail, setShowEmail] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [downloading, setDownloading] = useState(false)
+  const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
+
+  useEffect(() => {
+    let active = true
+    const loadDocument = async () => {
+      if (!supabase) {
+        if (active) {
+          setError('Güvenli belge görüntüleme için Supabase ayarları eksik.')
+          setLoading(false)
+        }
+        return
+      }
+      const { data: authData } = await supabase.auth.getSession()
+      const currentSession = authData?.session || null
+      if (!active) return
+      setSession(currentSession)
+      if (!currentSession) {
+        setError('Bu imzalı belgeyi görmek için updateMyPDF hesabına giriş yapmalısın.')
+        setLoading(false)
+        return
+      }
+      try {
+        const response = await apiFetch(`/api/signatures/${encodeURIComponent(requestId)}/document`, { headers: { Authorization: `Bearer ${currentSession.access_token}` } })
+        const data = await response.json().catch(() => ({}))
+        if (!response.ok) throw new Error(data.error || 'İmzalı belge açılamadı.')
+        if (!active) return
+        setDocument(data.document)
+        setEmailTo(data.document?.recipientEmail || currentSession.user?.email || '')
+      } catch (loadError) {
+        if (active) setError(loadError.message || 'İmzalı belge açılamadı.')
+      } finally {
+        if (active) setLoading(false)
+      }
+    }
+    loadDocument()
+    return () => { active = false }
+  }, [requestId])
+
+  const downloadDocument = async () => {
+    if (!document?.signedDocumentUrl || downloading) return
+    setDownloading(true)
+    setNotice('')
+    try {
+      const response = await fetch(document.signedDocumentUrl)
+      if (!response.ok) throw new Error('PDF indirilemedi.')
+      const blob = await response.blob()
+      const objectUrl = URL.createObjectURL(blob)
+      const link = window.document.createElement('a')
+      link.href = objectUrl
+      link.download = `${document.documentName.replace(/\.pdf$/i, '')}-signed.pdf`
+      window.document.body.appendChild(link)
+      link.click()
+      link.remove()
+      URL.revokeObjectURL(objectUrl)
+      setNotice('İmzalı PDF indirilmeye hazır.')
+    } catch (_error) {
+      window.open(document.signedDocumentUrl, '_blank', 'noopener,noreferrer')
+      setNotice('PDF yeni sekmede açıldı; buradan indirebilirsin.')
+    } finally {
+      setDownloading(false)
+    }
+  }
+
+  const sendDocumentEmail = async (event) => {
+    event.preventDefault()
+    if (!session || busy) return
+    setBusy(true)
+    setError('')
+    setNotice('')
+    try {
+      const response = await apiFetch(`/api/signatures/${encodeURIComponent(requestId)}/email`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${session.access_token}` },
+        body: JSON.stringify({ to: emailTo.trim(), message: emailMessage.trim() }),
+      })
+      const data = await response.json().catch(() => ({}))
+      if (!response.ok) throw new Error(data.error || 'E-posta gönderilemedi.')
+      setNotice(data.attached ? 'İmzalı PDF e-posta eki olarak gönderildi.' : 'İmzalı PDF güvenli bağlantıyla gönderildi.')
+      setShowEmail(false)
+      setEmailMessage('')
+    } catch (sendError) {
+      setError(sendError.message || 'E-posta gönderilemedi.')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const goToApp = () => { window.location.href = '/' }
+  const dateLabel = document?.signedAt ? new Date(document.signedAt).toLocaleString('tr-TR') : '—'
+
+  return (
+    <div className="signed-document-shell">
+      <header className="signed-document-header">
+        <button type="button" className="signed-back-button" onClick={goToApp}><ArrowLeft size={16} /> Ana çalışma alanı</button>
+        <div className="brand-lockup"><div className="brand-mark"><Sparkles size={17} strokeWidth={2.5} /></div><span className="brand-name">update<span>MyPDF</span></span></div>
+        <span className="signed-secure-label"><ShieldCheck size={14} /> Güvenli imzalı belge</span>
+      </header>
+      {loading ? <div className="signed-document-state"><LoaderCircle className="spin" size={27} /><p>İmzalı PDF hazırlanıyor...</p></div> : error && !document ? <div className="signed-document-state signed-document-error"><X size={27} /><h1>Belge açılamadı</h1><p>{error}</p><button type="button" className="auth-submit" onClick={goToApp}>{session ? 'Çalışma alanına dön' : 'Giriş yap'}</button></div> : document && <main className="signed-document-layout">
+        <section className="signed-document-viewer">
+          <div className="signed-viewer-heading"><div><FileText size={16} /><strong>{document.documentName}</strong></div><span><Check size={12} /> İmzalandı</span></div>
+          <div className="signed-viewer-frame"><iframe title="İmzalı PDF önizlemesi" src={`${document.signedDocumentUrl}#toolbar=1&navpanes=0&view=FitH`} /></div>
+        </section>
+        <aside className="signed-document-sidebar">
+          <div className="signed-sidebar-icon"><Check size={21} /></div>
+          <span className="signed-eyebrow">SIGNED DOCUMENT</span>
+          <h1>{document.documentName}</h1>
+          <p className="signed-sidebar-intro">Belge başarıyla imzalandı. PDF’i bu sayfada inceleyebilir, indirebilir veya istediğin kişiye gönderebilirsin.</p>
+          <div className="signed-status-card"><span><Check size={13} /> Tamamlandı</span><small>{dateLabel}</small></div>
+          <div className="signed-detail-list"><div><span>İmzalayan</span><strong>{document.recipientName || 'Belirtilmedi'}</strong><small>{document.recipientEmail}</small></div><div><span>Belge sahibi</span><strong>{document.senderName}</strong><small>{document.senderEmail}</small></div></div>
+          {notice && <div className="signed-notice"><Check size={14} /> {notice}</div>}
+          {error && document && <div className="signed-inline-error"><X size={14} /> {error}</div>}
+          <div className="signed-action-stack"><button type="button" className="signed-primary-action" onClick={downloadDocument} disabled={downloading}>{downloading ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} {downloading ? 'Hazırlanıyor...' : 'PDF’i indir'}</button><button type="button" className="signed-secondary-action" onClick={() => { setError(''); setShowEmail((current) => !current) }}><Mail size={16} /> E-posta gönder</button><button type="button" className="signed-secondary-action" onClick={() => window.open(document.signedDocumentUrl, '_blank', 'noopener,noreferrer')}><ExternalLink size={16} /> PDF’i yeni sekmede aç</button></div>
+          {showEmail && <form className="signed-email-form" onSubmit={sendDocumentEmail}><div className="signed-email-heading"><Mail size={15} /><div><strong>İmzalı kopyayı gönder</strong><span>PDF ek olarak paylaşılacak.</span></div></div><label>Alıcı e-posta<input type="email" value={emailTo} onChange={(event) => setEmailTo(event.target.value)} placeholder="ornek@email.com" required /></label><label>Mesaj <span>(opsiyonel)</span><textarea value={emailMessage} onChange={(event) => setEmailMessage(event.target.value)} rows={3} maxLength={2000} placeholder="Kısa bir not ekle" /></label><button type="submit" className="signed-primary-action" disabled={busy}>{busy ? <LoaderCircle className="spin" size={15} /> : <Mail size={15} />} {busy ? 'Gönderiliyor...' : 'E-postayı gönder'}</button></form>}
+          <button type="button" className="signed-return-link" onClick={goToApp}><ArrowLeft size={14} /> Ana çalışma alanına dön</button>
+        </aside>
+      </main>}
+    </div>
+  )
+}
+
 function ReviewPage({ token }) {
   const [request, setRequest] = useState(null)
   const [signatureText, setSignatureText] = useState('')
@@ -2005,4 +2126,5 @@ function ReviewPage({ token }) {
 }
 
 const reviewToken = window.location.pathname.startsWith('/review/') ? decodeURIComponent(window.location.pathname.split('/').filter(Boolean).pop() || '') : ''
-createRoot(document.getElementById('root')).render(reviewToken ? <ReviewPage token={reviewToken} /> : <App />)
+const signedDocumentId = window.location.pathname.startsWith('/document/') ? decodeURIComponent(window.location.pathname.split('/').filter(Boolean).pop() || '') : ''
+createRoot(document.getElementById('root')).render(reviewToken ? <ReviewPage token={reviewToken} /> : signedDocumentId ? <SignedDocumentPage requestId={signedDocumentId} /> : <App />)

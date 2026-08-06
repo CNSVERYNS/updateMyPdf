@@ -1361,6 +1361,90 @@ app.get('/api/signatures', async (request, response) => {
   }
 })
 
+app.get('/api/signatures/:id/document', requireAuth, async (request, response) => {
+  try {
+    const { admin, user } = request.supabaseContext
+    const { data, error } = await admin.from('signature_requests').select('id,owner_id,document_name,workflow_type,recipient_email,recipient_name,status,created_at,signed_at,message,metadata').eq('id', request.params.id).eq('owner_id', user.id).maybeSingle()
+    if (error) throw error
+    if (!data) return response.status(404).json({ error: 'İmzalı belge bulunamadı.' })
+    if (data.status !== 'signed') return response.status(409).json({ error: 'Bu belge henüz imzalanmış değil.' })
+    const signedDocumentPath = data.metadata?.signedDocumentPath || null
+    if (!signedDocumentPath) return response.status(404).json({ error: 'İmzalı PDF kaydı bulunamadı.' })
+    const signed = await admin.storage.from('pdfs').createSignedUrl(signedDocumentPath, 604800)
+    if (signed.error || !signed.data?.signedUrl) return response.status(404).json({ error: 'İmzalı PDF artık erişilebilir değil.' })
+    response.json({
+      document: {
+        id: data.id,
+        documentName: data.document_name,
+        workflowType: data.workflow_type,
+        recipientEmail: data.recipient_email,
+        recipientName: data.recipient_name,
+        status: data.status,
+        createdAt: data.created_at,
+        signedAt: data.signed_at,
+        message: data.message,
+        signedDocumentUrl: signed.data.signedUrl,
+        senderName: user.user_metadata?.full_name || user.email || 'updateMyPDF kullanıcısı',
+        senderEmail: user.email || '',
+      },
+    })
+  } catch (error) {
+    console.error('[signature-document]', error?.message || error)
+    response.status(signatureRequestError(error) ? 503 : error?.status || 500).json({ error: signatureRequestError(error) ? 'İmza tabloları henüz Supabase içinde oluşturulmamış.' : error?.status === 401 ? error.message : 'İmzalı belge açılamadı.' })
+  }
+})
+
+app.post('/api/signatures/:id/email', requireAuth, async (request, response) => {
+  try {
+    const { admin, user } = request.supabaseContext
+    const recipient = String(request.body?.to || '').trim().slice(0, 320)
+    const message = String(request.body?.message || '').trim().slice(0, 2000)
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient)) return response.status(400).json({ error: 'Geçerli bir alıcı e-posta adresi yaz.' })
+    const { data, error } = await admin.from('signature_requests').select('id,owner_id,document_name,recipient_email,recipient_name,status,signed_at,metadata').eq('id', request.params.id).eq('owner_id', user.id).maybeSingle()
+    if (error) throw error
+    if (!data) return response.status(404).json({ error: 'İmzalı belge bulunamadı.' })
+    if (data.status !== 'signed') return response.status(409).json({ error: 'Yalnızca imzalanmış belgeler e-posta ile gönderilebilir.' })
+    const signedDocumentPath = data.metadata?.signedDocumentPath || null
+    if (!signedDocumentPath) return response.status(404).json({ error: 'İmzalı PDF kaydı bulunamadı.' })
+    const signed = await admin.storage.from('pdfs').createSignedUrl(signedDocumentPath, 604800)
+    if (signed.error || !signed.data?.signedUrl) return response.status(404).json({ error: 'İmzalı PDF artık erişilebilir değil.' })
+    const signedFile = await admin.storage.from('pdfs').download(signedDocumentPath)
+    if (signedFile.error || !signedFile.data) throw signedFile.error || new Error('Signed PDF could not be downloaded.')
+    const signedPdfBytes = Buffer.from(await signedFile.data.arrayBuffer())
+    const signedFileName = `${safeFileName(data.document_name).replace(/\.pdf$/i, '')}-signed.pdf`
+    const canAttach = signedPdfBytes.length <= 29 * 1024 * 1024
+    const attachments = canAttach ? [{ content: signedPdfBytes.toString('base64'), filename: signedFileName }] : []
+    const senderName = String(user.user_metadata?.full_name || user.email || 'updateMyPDF kullanıcısı').trim()
+    const emailResult = await sendResendEmail({
+      to: recipient,
+      subject: `İmzalı PDF: ${data.document_name}`,
+      replyTo: process.env.EMAIL_FROM,
+      html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#30343a"><p><strong>${escapeHtml(senderName)}</strong> seninle imzalı bir PDF paylaştı.</p>${message ? `<p>${escapeHtml(message)}</p>` : ''}<p><strong>${escapeHtml(data.document_name)}</strong></p><p><a href="${escapeHtml(signed.data.signedUrl)}" style="display:inline-block;padding:12px 18px;background:#e45235;color:#fff;text-decoration:none;border-radius:8px">İmzalı PDF’i aç</a></p><p>${canAttach ? 'PDF ayrıca e-postaya eklenmiştir.' : 'Dosya boyutu nedeniyle PDF, güvenli bağlantı üzerinden açılabilir.'}</p></div>`,
+      text: `${senderName} seninle imzalı bir PDF paylaştı.\n\n${message ? `${message}\n\n` : ''}${data.document_name}\n\nİmzalı PDF’i aç: ${signed.data.signedUrl}${canAttach ? '\n\nPDF ayrıca e-postaya eklenmiştir.' : ''}`,
+      attachments,
+    })
+    try {
+      await addAuditEvent(admin, { ownerId: user.id, requestId: data.id, eventType: 'signed_copy_emailed', actorEmail: user.email, details: { recipient, provider: 'resend', providerMessageId: emailResult.id || null, attached: canAttach } })
+    } catch (auditError) {
+      console.error('[signature-document-email-audit]', auditError?.message || auditError)
+    }
+    response.json({ ok: true, emailId: emailResult.id || null, attached: canAttach })
+  } catch (error) {
+    console.error('[signature-document-email]', error?.message || error)
+    const status = error?.status || (signatureRequestError(error) ? 503 : error?.code === 'EMAIL_PROVIDER_ERROR' ? 502 : 500)
+    const message = signatureRequestError(error)
+      ? 'İmza tabloları henüz Supabase içinde oluşturulmamış.'
+      : error?.code === 'EMAIL_NOT_CONFIGURED'
+        ? 'Resend e-posta ayarları eksik.'
+        : error?.code === 'EMAIL_PROVIDER_ERROR'
+          ? 'E-posta sağlayıcısı gönderimi reddetti; Resend ayarlarını kontrol et.'
+          : error?.status === 401
+            ? error.message
+            : 'İmzalı PDF e-posta ile gönderilemedi.'
+    response.status(status).json({ error: message })
+  }
+})
+
 app.get('/api/signatures/:token', async (request, response) => {
   try {
     const admin = getSupabaseAdmin()

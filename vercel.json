@@ -3,6 +3,7 @@
   "outputDirectory": "dist",
   "framework": "vite",
   "rewrites": [
-    { "source": "/review/:token", "destination": "/index.html" }
+    { "source": "/review/:token", "destination": "/index.html" },
+    { "source": "/document/:id", "destination": "/index.html" }
   ]
 }
