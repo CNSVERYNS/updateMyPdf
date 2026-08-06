@@ -42,7 +42,20 @@ import { supabase, supabaseConfigured } from './supabase'
 import './styles.css'
 
 const apiBaseUrl = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
-const apiFetch = (path, options) => fetch(`${apiBaseUrl}${path}`, options)
+const apiFetch = async (path, options = {}) => {
+  const result = await fetch(`${apiBaseUrl}${path}`, options)
+  if (result.status !== 401 || !supabase || !options.headers) return result
+  try {
+    const refreshed = await supabase.auth.refreshSession()
+    const nextSession = refreshed.data?.session
+    if (!nextSession) return result
+    const retryHeaders = new Headers(options.headers)
+    retryHeaders.set('Authorization', `Bearer ${nextSession.access_token}`)
+    return fetch(`${apiBaseUrl}${path}`, { ...options, headers: retryHeaders })
+  } catch {
+    return result
+  }
+}
 
 const starterPrompts = [
   { icon: Sparkles, label: 'Belge oluştur', prompt: 'İstediğim bir belgeyi sıfırdan oluşturmama yardım et.' },
