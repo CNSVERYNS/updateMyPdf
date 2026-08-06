@@ -1886,6 +1886,7 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
   try {
     const client = getClient()
     const translationMode = /(?:çevir|çeviri|translate|translation|traduc|traduce|ingilizce|english|ispanyolca|spanish|español)/i.test(prompt)
+    const targetLanguageHint = /(?:ingilizce|english)/i.test(prompt) ? 'English' : /(?:türkçe|turkish|turkce)/i.test(prompt) ? 'Turkish' : /(?:ispanyolca|spanish|español)/i.test(prompt) ? 'Spanish' : 'the language explicitly requested by the user'
     let extractedTranslationText = ''
     if (translationMode) {
       const extractedPages = await extractTextPages(sourceFile.buffer)
@@ -1916,9 +1917,9 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
     })
     content.push({ type: 'input_text', text: prompt })
     const commandInstructions = translationMode
-      ? `${systemInstructions}\n\nTranslation mode: translate the complete document into the language requested by the user. The extracted text is grouped by page. Return exactly one translate action for each page that contains text: use the complete original page text in text, the complete translated page text in replacement, and the exact page number. Never return overlapping, duplicate, or per-line actions. Return only the fields allowed by the translation schema; never add null fields, commentary, or unsupported action types.`
+      ? `${systemInstructions}\n\nTranslation mode: the user explicitly requested a full-document translation into ${targetLanguageHint}. Do not answer that translation is unnecessary unless every extracted page is genuinely already in ${targetLanguageHint}. The extracted text is grouped by page. Return exactly one translate action for each page that contains text: use the complete original page text in text, the complete translated page text in replacement, and the exact page number. Never return overlapping, duplicate, or per-line actions. Return only the fields allowed by the translation schema; never add null fields, commentary, or unsupported action types.`
       : systemInstructions
-    const result = await client.responses.create({
+    const planRequest = {
       model: pdfEditorModel(),
       instructions: commandInstructions,
       input: [{
@@ -1935,10 +1936,27 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
       },
       max_output_tokens: translationMode ? 24000 : 8000,
       reasoning: { effort: 'low' },
-    }, { timeout: 180000 })
+    }
+    let result = await client.responses.create(planRequest, { timeout: 180000 })
 
     if (!result.output_text?.trim()) throw new Error('The model returned an empty response.')
-    const plan = JSON.parse(result.output_text)
+    let plan = JSON.parse(result.output_text)
+    const translationActions = Array.isArray(plan.actions) ? plan.actions.filter((action) => action?.type === 'translate' && String(action.text || '').trim() && String(action.replacement || '').trim()) : []
+    const translationNoOp = translationMode && (!translationActions.length || translationActions.every((action) => String(action.text).trim() === String(action.replacement).trim()))
+    if (translationNoOp) {
+      result = await client.responses.create({
+        ...planRequest,
+        instructions: `${commandInstructions}\n\nHARD REQUIREMENT: Do not return assistant text saying the document is already English. Return one actual translate action per extracted page now. The target language is the language explicitly named by the user. Preserve names and numbers, but translate all non-target-language prose.`,
+      }, { timeout: 180000 })
+      if (!result.output_text?.trim()) throw new Error('The translation planner returned an empty response.')
+      plan = JSON.parse(result.output_text)
+    }
+    if (translationMode) {
+      const finalTranslationActions = Array.isArray(plan.actions) ? plan.actions.filter((action) => action?.type === 'translate' && String(action.text || '').trim() && String(action.replacement || '').trim()) : []
+      if (!finalTranslationActions.length || finalTranslationActions.every((action) => String(action.text).trim() === String(action.replacement).trim())) {
+        throw new Error('Translation planner returned no actual translation actions.')
+      }
+    }
     const removePasswordAction = plan.actions.find((action) => action.type === 'remove_password')
     const executorActions = removePasswordAction ? plan.actions.filter((action) => action.type !== 'remove_password') : plan.actions
     const editableSource = removePasswordAction ? await decryptPdfBuffer(sourceFile.buffer, removePasswordAction.password || '') : sourceFile.buffer
