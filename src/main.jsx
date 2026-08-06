@@ -54,6 +54,21 @@ const initialMessages = [
   },
 ]
 
+const assistantPersistenceKey = 'updatemypdf-assistant-state-v2'
+const readAssistantPersistence = () => {
+  try {
+    if (typeof localStorage === 'undefined') return {}
+    const parsed = JSON.parse(localStorage.getItem(assistantPersistenceKey) || '{}')
+    return {
+      messages: Array.isArray(parsed.messages) ? parsed.messages.filter((item) => item && ['user', 'assistant'].includes(item.role) && typeof item.text === 'string').slice(-40) : [],
+      profile: parsed.profile && typeof parsed.profile === 'object' ? parsed.profile : null,
+      document: parsed.document && typeof parsed.document.base64 === 'string' && parsed.document.base64.length <= 3200000 ? parsed.document : null,
+    }
+  } catch {
+    return {}
+  }
+}
+
 const pricingPlans = [
   {
     id: 'basic',
@@ -138,11 +153,12 @@ const exportMimeTypes = {
 }
 
 function App() {
+  const [persistedAssistantState] = useState(readAssistantPersistence)
   const [file, setFile] = useState(null)
   const [originalFile, setOriginalFile] = useState(null)
   const [pdfTitle, setPdfTitle] = useState('')
   const [fileUrl, setFileUrl] = useState('')
-  const [messages, setMessages] = useState(initialMessages)
+  const [messages, setMessages] = useState(() => persistedAssistantState.messages?.length ? persistedAssistantState.messages : initialMessages)
   const [input, setInput] = useState('')
   const [isThinking, setIsThinking] = useState(false)
   const [aiStatus, setAiStatus] = useState('idle')
@@ -176,7 +192,8 @@ function App() {
   const [isCloudSaving, setIsCloudSaving] = useState(false)
   const [currentCloudPath, setCurrentCloudPath] = useState('')
   const [assistantQuestions, setAssistantQuestions] = useState([])
-  const [assistantProfile, setAssistantProfile] = useState(null)
+  const [assistantProfile, setAssistantProfile] = useState(() => persistedAssistantState.profile || null)
+  const [cachedDocument, setCachedDocument] = useState(() => persistedAssistantState.document || null)
   const [showSignatureRequest, setShowSignatureRequest] = useState(false)
   const [showSignatureRequests, setShowSignatureRequests] = useState(false)
   const [signatureRequestBusy, setSignatureRequestBusy] = useState(false)
@@ -189,6 +206,7 @@ function App() {
   const mergeInputRef = useRef(null)
   const imageInputRef = useRef(null)
   const chatEndRef = useRef(null)
+  const restoredDocumentRef = useRef(false)
 
   useEffect(() => {
     return () => {
@@ -199,6 +217,32 @@ function App() {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, isThinking])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(assistantPersistenceKey, JSON.stringify({ messages: messages.slice(-40), profile: assistantProfile, document: cachedDocument }))
+    } catch {
+      // Local persistence is best effort; cloud storage remains the durable copy for signed-in users.
+    }
+  }, [messages, assistantProfile, cachedDocument])
+
+  useEffect(() => {
+    if (restoredDocumentRef.current || !cachedDocument?.base64) return
+    restoredDocumentRef.current = true
+    try {
+      const restoredFile = decodePdfFile(cachedDocument.base64, cachedDocument.name || 'document.pdf')
+      setFile(restoredFile)
+      setOriginalFile(restoredFile)
+      setPdfTitle(cachedDocument.title || restoredFile.name)
+      setFileUrl(URL.createObjectURL(restoredFile))
+      setPageCount(0)
+      const infoFormData = new FormData()
+      infoFormData.append('file', restoredFile)
+      apiFetch('/api/pdf/info', { method: 'POST', headers: authHeaders(), body: infoFormData }).then((infoResponse) => infoResponse.ok ? infoResponse.json() : null).then((info) => { if (info?.pageCount) setPageCount(info.pageCount) }).catch(() => {})
+    } catch {
+      setCachedDocument(null)
+    }
+  }, [cachedDocument])
 
   useEffect(() => {
     apiFetch('/api/capabilities')
@@ -316,9 +360,18 @@ function App() {
 
   const signOut = async () => {
     await supabase?.auth.signOut()
+    if (fileUrl) URL.revokeObjectURL(fileUrl)
+    setFile(null)
+    setOriginalFile(null)
+    setFileUrl('')
+    setPdfTitle('')
     setCloudFiles([])
+    setCurrentCloudPath('')
     setShowCloudFiles(false)
-    setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: 'Cloud hesabından çıkış yaptın.' }])
+    setMessages(initialMessages)
+    setAssistantProfile(null)
+    setCachedDocument(null)
+    try { localStorage.removeItem(assistantPersistenceKey) } catch {}
   }
 
   const uploadCurrentToCloud = async () => {
@@ -349,6 +402,7 @@ function App() {
       const result = await apiFetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: formData })
       const data = await result.json().catch(() => ({}))
       if (!result.ok) throw new Error(data.error || 'PDF cloud’a yüklenemedi.')
+      setCurrentCloudPath(data.path || '')
       setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: 'PDF private cloud storage’a kaydedildi.' }])
       await loadCloudFiles()
     } catch (error) {
@@ -492,6 +546,7 @@ function App() {
     setChanges([])
     setAssistantQuestions([])
     setAssistantProfile(null)
+    setCachedDocument(null)
   }
 
   const handleFileChange = (event) => {
@@ -651,10 +706,25 @@ function App() {
           setFileUrl(URL.createObjectURL(generatedFile))
           setPdfTitle(assistantData.documentTitle || generatedFile.name)
           setPageCount(0)
+          if (assistantData.generatedPdf.length <= 3200000) setCachedDocument({ base64: assistantData.generatedPdf, name: generatedFile.name, title: assistantData.documentTitle || generatedFile.name })
           const infoFormData = new FormData()
           infoFormData.append('file', generatedFile)
           apiFetch('/api/pdf/info', { method: 'POST', headers: authHeaders(), body: infoFormData }).then((infoResponse) => infoResponse.ok ? infoResponse.json() : null).then((info) => { if (info?.pageCount) setPageCount(info.pageCount) }).catch(() => {})
-          assistantText += '\n\nPDF taslağını hazırladım. İstersen şimdi düzenleyebilir, cloud’a kaydedebilir veya imzaya gönderebilirsin.'
+          assistantText += '\n\nPDF belgesini oluşturdum. İstersen şimdi düzenleyebilir, cloud’a kaydedebilir veya imzaya gönderebilirsin.'
+          if (session) {
+            try {
+              const cloudFormData = new FormData()
+              cloudFormData.append('file', generatedFile)
+              const cloudResponse = await apiFetch('/api/storage/upload', { method: 'POST', headers: authHeaders(), body: cloudFormData })
+              const cloudData = await cloudResponse.json().catch(() => ({}))
+              if (!cloudResponse.ok) throw new Error(cloudData.error || 'Cloud kaydı başarısız oldu.')
+              setCurrentCloudPath(cloudData.path || '')
+              assistantText += '\n\nHesabına bağlı cloud alanına da kaydettim.'
+              try { await loadCloudFiles() } catch { /* The upload itself succeeded; workspace refresh can retry. */ }
+            } catch (cloudError) {
+              assistantText += `\n\nPDF oluşturuldu ancak cloud kaydı yapılamadı: ${cloudError.message || 'tekrar deneyebilirsin.'}`
+            }
+          }
           if (assistantData.complianceNotes?.length) assistantText += `\n\nNotlar:\n${assistantData.complianceNotes.join('\n')}`
           if (!session) recordGuestPrompt()
         }
@@ -1047,7 +1117,7 @@ function AssistantQuestionsCard({ questions, onSubmit, disabled }) {
 
   return (
     <form className="assistant-question-card" onSubmit={submit}>
-      <div className="assistant-question-heading"><Sparkles size={13} /><strong>Belge bilgileri</strong><span>AI’nin taslağı doğru hazırlaması için</span></div>
+      <div className="assistant-question-heading"><Sparkles size={13} /><strong>Belge bilgileri</strong><span>Belgenin doğru hazırlanması için</span></div>
       {questions.map((question) => <label key={question.id}>{question.label}{question.required && <sup>*</sup>}{question.kind === 'select' ? <select value={values[question.id] || ''} onChange={(event) => setValues((current) => ({ ...current, [question.id]: event.target.value }))}><option value="">Seç</option>{(question.options || []).map((option) => <option value={option} key={option}>{option}</option>)}</select> : question.kind === 'textarea' ? <textarea value={values[question.id] || ''} onChange={(event) => setValues((current) => ({ ...current, [question.id]: event.target.value }))} placeholder={question.question} rows={2} /> : <input type={question.kind === 'date' || question.kind === 'number' || question.kind === 'email' ? question.kind : 'text'} value={values[question.id] || ''} onChange={(event) => setValues((current) => ({ ...current, [question.id]: event.target.value }))} placeholder={question.question} />}{question.help && <small>{question.help}</small>}</label>)}
       {error && <div className="assistant-question-error">{error}</div>}
       <button type="submit" className="assistant-question-submit" disabled={disabled}>{disabled ? <LoaderCircle className="spin" size={14} /> : <ArrowUp size={14} />} Yanıtları gönder</button>

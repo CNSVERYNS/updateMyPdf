@@ -450,8 +450,8 @@ const createTextPdfBuffer = async (title, content, metadata = {}) => {
   const document = await PDFDocument.create()
   document.registerFontkit(fontkit)
   document.setTitle(pdfSafeText(title || 'Generated document'))
-  document.setAuthor('updateMyPDF AI')
-  document.setSubject('AI-generated professional document draft')
+  document.setAuthor('updateMyPDF')
+  document.setSubject('Professional document')
   const regular = await embedPdfFont(document, 'regular', StandardFonts.Helvetica)
   const bold = await embedPdfFont(document, 'bold', StandardFonts.HelveticaBold)
   const italic = await embedPdfFont(document, 'italic', StandardFonts.HelveticaOblique)
@@ -474,8 +474,7 @@ const createTextPdfBuffer = async (title, content, metadata = {}) => {
       currentPage.drawLine({ start: { x: margin, y: 744 }, end: { x: pageSize[0] - margin, y: 744 }, thickness: 0.7, color: colors.rule })
     }
     currentPage.drawLine({ start: { x: margin, y: 38 }, end: { x: pageSize[0] - margin, y: 38 }, thickness: 0.7, color: colors.rule })
-    currentPage.drawText(`updateMyPDF · DRAFT · ${index + 1}/${pages.length}`, { x: margin, y: 24, size: 8, font: regular, color: colors.muted })
-    currentPage.drawText('Prepared for review', { x: pageSize[0] - margin - regular.widthOfTextAtSize('Prepared for review', 8), y: 24, size: 8, font: regular, color: colors.muted })
+    currentPage.drawText(`updateMyPDF · ${index + 1}/${pages.length}`, { x: margin, y: 24, size: 8, font: regular, color: colors.muted })
   }
   const newPage = (first = false) => {
     page = document.addPage(pageSize)
@@ -534,17 +533,13 @@ const createTextPdfBuffer = async (title, content, metadata = {}) => {
   }
 
   newPage(true)
-  page.drawText('UPDATEMYPDF  ·  AI DOCUMENT DRAFT', { x: margin, y, size: 8.5, font: bold, color: colors.accent })
+  page.drawText('UPDATEMYPDF', { x: margin, y, size: 8.5, font: bold, color: colors.accent })
   y -= 28
   drawWrapped(title || 'Generated document', bold, 24, 29, margin, contentWidth, colors.ink)
   y -= 5
   page.drawLine({ start: { x: margin, y }, end: { x: pageSize[0] - margin, y }, thickness: 1.5, color: colors.accent })
   y -= 20
-  const meta = [metadata.documentLanguage, metadata.jurisdiction, 'Draft for review'].filter(Boolean).join('  ·  ')
-  if (meta) {
-    page.drawText(pdfSafeText(meta), { x: margin, y, size: 8.5, font: regular, color: colors.muted })
-    y -= 25
-  }
+  y -= 12
   const blocks = parseDocumentBlocks(content, title)
   for (let index = 0; index < blocks.length; index += 1) {
     const block = blocks[index]
@@ -740,7 +735,7 @@ const documentAssistantSchema = {
 const documentAssistantInstructions = `You are updateMyPDF's general-purpose document concierge: a natural, thoughtful ChatGPT-style assistant who understands the whole conversation, combines facts, and then turns the finished request into a professional PDF. This is not a fixed list of lease, vehicle, or business templates. Support any reasonable request: contracts, policies, letters, applications, reports, invoices, proposals, forms, checklists, notices, plans, translations, and custom documents in any language.
 Conversation style is essential: speak like a calm, capable human assistant, not like an API, legal form, database, or technical checklist. Reply in the user's language and match their tone. Start by acknowledging what you understood in one natural sentence. Explain only why a missing detail matters, then ask the smallest useful set of questions. Never expose status names, schema fields, internal reasoning, token/model details, or phrases such as "I need to identify the document type". Do not dump a generic questionnaire. When the user gives scattered facts, silently merge them into one coherent understanding and do not make them repeat themselves.
 Use the newest user message, the compact profile, and only the recent conversation. Preserve and reconcile facts already collected. Never invent material facts, names, addresses, dates, prices, legal choices, or obligations. Do not ask again for facts already in the profile. Ask no more than four high-value questions per turn; group related details into one question and give a short example. If the user is only asking for advice or explanation, answer directly with status answer and do not force document creation.
-For a document request, first identify the user's outcome, audience, document type, language, tone, jurisdiction, and required format. Ask for jurisdiction at the right level (country, state/province/region, city/municipality, district, or governing law) whenever the document has legal, tax, employment, immigration, financial, medical, safety, or regulatory consequences. If the location is unknown, ask for it instead of assuming Chicago, the United States, or any other place. Adapt the intake to the request; never expose a long generic checklist.
+For a document request, first identify the user's outcome, audience, document type, language, tone, jurisdiction, and required format. Ask for jurisdiction at the right level (country, state/province/region, city/municipality, district, or governing law) whenever the document has legal, tax, employment, immigration, financial, medical, safety, or regulatory consequences. Language policy is strict: if the user explicitly asks for a language, use that language even when it differs from the jurisdiction. Otherwise, for a legal or official document, use the primary official/business language of the selected jurisdiction (for the United States, default to English); do not infer Turkish only because the chat is Turkish. Ask a language question only when the jurisdiction has multiple meaningful official languages or the user's intent is genuinely ambiguous. If the location is unknown, ask for it instead of assuming Chicago, the United States, or any other place. Adapt the intake to the request; never expose a long generic checklist.
 Research policy: do not use web search during routine intake or for purely creative/personal documents. When the user asks for research, or when current/local rules materially affect a document, set researchNeeded true and use the web_search tool before drafting. Search only after enough facts and jurisdiction are known. Prefer primary government, regulator, court, official standards, or authoritative institutional sources; use current sources and compare sources when rules conflict. Never imply that a search result alone makes the document legally compliant. Put the most useful source URLs in researchSources and explain their role in why. If a source cannot be verified, say so and leave a review note.
 When the required facts are complete, return status draft_ready and write documentContent as a complete, polished, standalone document in the requested language. Harmonize the facts into natural clauses; never paste a raw fact list into the document. Use sensible headings, definitions, dates, payment or performance terms, responsibilities, exceptions, termination, dispute or governing-law terms only when relevant, signature blocks, and appendices when useful. For documents intended to be signed, always finish with a ## Signatures section; the PDF renderer will turn it into aligned signature cards. Do not include markdown fences. Use placeholders only for genuinely optional facts; list every placeholder in complianceNotes. Keep the chat reply warm and concise, for example: "Bilgileri birleştirdim; taslağı hazırladım." For documents with legal or regulated effect, complianceNotes must say that this is a draft, not legal advice, current rules and source applicability must be checked, and a qualified local professional should review it before reliance or signature. Never claim enforceability or guaranteed compliance.`
 
