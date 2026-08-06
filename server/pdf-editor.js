@@ -226,7 +226,14 @@ const translateTextBlock = async (pdfDocument, pagesWithText, action) => {
   let matchCount = 0
 
   for (const pageData of selectedPages) {
-    const matches = matchingItems(pageData, action.text)
+    let matches = matchingItems(pageData, action.text)
+    // Full-page translations can contain harmless extraction differences
+    // (hyphenation, ligatures, hidden spaces, or punctuation variants). When
+    // the action is explicitly scoped to a page, fall back to every visible
+    // text item on that page instead of discarding the translation.
+    if (!matches.length && action.page === pageData.pageNumber && String(action.replacement || '').trim()) {
+      matches = pageData.items.map((item) => ({ ...item, startRatio: 0, endRatio: item.width }))
+    }
     if (!matches.length) continue
     const pdfPage = pdfDocument.getPages()[pageData.pageNumber - 1]
     if (!pdfPage) continue
