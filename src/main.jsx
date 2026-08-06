@@ -135,6 +135,20 @@ const loadPdfJs = () => {
   return pdfJsPromise
 }
 
+const validatePdfFile = async (sourceFile) => {
+  const { getDocument } = await loadPdfJs()
+  const loadingTask = getDocument({ data: new Uint8Array(await sourceFile.arrayBuffer()) })
+  const pdfDocument = await loadingTask.promise
+  try {
+    if (!pdfDocument.numPages) throw new Error('PDF dosyasında görüntülenebilir sayfa bulunamadı.')
+    await pdfDocument.getPage(1)
+    return pdfDocument.numPages
+  } finally {
+    if (typeof pdfDocument.cleanup === 'function') await pdfDocument.cleanup()
+    await pdfDocument.destroy()
+  }
+}
+
 const downloadBase64File = (base64, filename, mimeType) => {
   const binary = window.atob(base64)
   const bytes = new Uint8Array(binary.length)
@@ -936,12 +950,13 @@ function App() {
       const editedFile = data.editedPdf ? decodePdfFile(data.editedPdf, file.name) : null
       let cloudSaveWarning = ''
       if (editedFile) {
+        const editedPageCount = await validatePdfFile(editedFile)
         if (fileUrl) URL.revokeObjectURL(fileUrl)
         setFile(editedFile)
         setFileUrl(URL.createObjectURL(editedFile))
         const titleAction = data.actions?.find((action) => action.type === 'set_title' && action.title)
         if (titleAction?.title) setPdfTitle(titleAction.title)
-        setPageCount(0)
+        setPageCount(editedPageCount)
         const infoFormData = new FormData()
         infoFormData.append('file', editedFile)
         apiFetch('/api/pdf/info', { method: 'POST', headers: authHeaders(), body: infoFormData })
@@ -2260,4 +2275,22 @@ function ReviewPage({ token }) {
 
 const reviewToken = window.location.pathname.startsWith('/review/') ? decodeURIComponent(window.location.pathname.split('/').filter(Boolean).pop() || '') : ''
 const signedDocumentId = window.location.pathname.startsWith('/document/') ? decodeURIComponent(window.location.pathname.split('/').filter(Boolean).pop() || '') : ''
-createRoot(document.getElementById('root')).render(reviewToken ? <ReviewPage token={reviewToken} /> : signedDocumentId ? <SignedDocumentPage requestId={signedDocumentId} /> : <App />)
+
+class AppErrorBoundary extends React.Component {
+  state = { error: null }
+
+  static getDerivedStateFromError(error) {
+    return { error }
+  }
+
+  componentDidCatch(error, info) {
+    console.error('[app-render-error]', error, info)
+  }
+
+  render() {
+    if (!this.state.error) return this.props.children
+    return <div className="app-error-state"><div className="app-error-card"><div className="app-error-icon"><X size={20} /></div><h1>Bu görünüm yüklenemedi</h1><p>PDF’i koruduk. Sayfayı yenileyip tekrar deneyebilirsin.</p><button type="button" onClick={() => window.location.reload()}>Sayfayı yenile</button></div></div>
+  }
+}
+
+createRoot(document.getElementById('root')).render(<AppErrorBoundary>{reviewToken ? <ReviewPage token={reviewToken} /> : signedDocumentId ? <SignedDocumentPage requestId={signedDocumentId} /> : <App />}</AppErrorBoundary>)

@@ -1916,7 +1916,7 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
     })
     content.push({ type: 'input_text', text: prompt })
     const commandInstructions = translationMode
-      ? `${systemInstructions}\n\nTranslation mode: translate the complete document into the language requested by the user. Return one compact translate action per identifiable original text block, preserving the original page number and source text exactly. Return only the fields allowed by the translation schema; never add null fields, commentary, or unsupported action types.`
+      ? `${systemInstructions}\n\nTranslation mode: translate the complete document into the language requested by the user. The extracted text is grouped by page. Return exactly one translate action for each page that contains text: use the complete original page text in text, the complete translated page text in replacement, and the exact page number. Never return overlapping, duplicate, or per-line actions. Return only the fields allowed by the translation schema; never add null fields, commentary, or unsupported action types.`
       : systemInstructions
     const result = await client.responses.create({
       model: pdfEditorModel(),

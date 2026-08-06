@@ -367,6 +367,13 @@ button { cursor: pointer; }
 /* updateMyPDF light paper theme */
 :root { color: #26282d; background: #f7f7f5; --bg: #f7f7f5; --panel: #ffffff; --panel-light: #fffaf7; --line: #e4e6ea; --muted: #727985; --text: #26282d; --purple: #e65a3d; --purple-light: #d3472e; --cyan: #ffad62; }
 body { color: var(--text); background: var(--bg); }
+.app-error-state { display: grid; min-height: 100vh; place-items: center; padding: 24px; background: #f7f7f5; }
+.app-error-card { width: min(420px, 100%); padding: 30px; border: 1px solid #efc9bf; border-radius: 16px; color: #34373d; background: #ffffff; box-shadow: 0 20px 60px rgba(54,33,27,.12); text-align: center; }
+.app-error-icon { display: grid; width: 42px; height: 42px; margin: 0 auto 14px; place-items: center; border-radius: 13px; color: #a63227; background: #fff0eb; }
+.app-error-card h1 { margin: 0; font-family: Manrope, sans-serif; font-size: 18px; }
+.app-error-card p { margin: 9px 0 20px; color: #737b85; font-size: 12px; line-height: 1.5; }
+.app-error-card button { padding: 10px 14px; border: 0; border-radius: 7px; color: #ffffff; background: #e65a3d; font-size: 11px; font-weight: 700; }
+.app-error-card button:hover { background: #c93c28; }
 .app-shell { background: linear-gradient(180deg, #ffffff 0%, #f7f7f5 100%); }
 .topbar { border-bottom-color: #e5e6e9; background: rgba(255,255,255,.96); box-shadow: 0 8px 24px rgba(46,31,24,.08); }
 .brand-mark { color: white; background: linear-gradient(135deg, #f36b43, #c9362b); box-shadow: 0 5px 16px rgba(218,71,45,.22); }
