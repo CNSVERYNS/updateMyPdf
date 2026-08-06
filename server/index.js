@@ -258,6 +258,58 @@ const addAuditEvent = async (admin, event) => {
 
 const signatureRequestError = (error) => error?.code === 'PGRST205' || error?.code === '42P01' || String(error?.message || '').includes('signature_requests') || String(error?.message || '').includes('pdf_audit_events')
 
+const sendSignatureInviteEmail = async ({ recipientEmail, recipientName, senderName, documentName, workflowType, message, reviewUrl, expiresAt, signerIndex, signerCount }) => {
+  const greeting = `Hello ${escapeHtml(recipientName || recipientEmail)},`
+  const bodyText = message ? `<p>${escapeHtml(message)}</p>` : ''
+  const sequenceNote = signerCount > 1 ? `<p>You are signer ${signerIndex + 1} of ${signerCount}. The next signer will receive the PDF after your signature is completed.</p>` : ''
+  const emailResult = await sendResendEmail({
+    to: recipientEmail,
+    subject: `${workflowType === 'review' ? 'PDF review request' : 'PDF signature request'}: ${documentName}`,
+    replyTo: process.env.EMAIL_FROM,
+    html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#182238"><p>${greeting}</p>${bodyText}<p><strong>${escapeHtml(senderName)}</strong> asked you to ${workflowType === 'review' ? 'review' : 'sign'} <strong>${escapeHtml(documentName)}</strong>.</p>${sequenceNote}<p><a href="${escapeHtml(reviewUrl)}" style="display:inline-block;padding:12px 18px;background:#e45235;color:#fff;text-decoration:none;border-radius:8px">Open PDF</a></p><p>This link expires on ${escapeHtml(expiresAt)}.</p></div>`,
+    text: `${greeting.replaceAll('&lt;', '<').replaceAll('&gt;', '>')}\n\n${senderName} asked you to ${workflowType === 'review' ? 'review' : 'sign'} ${documentName}.\n${message || ''}\n\n${signerCount > 1 ? `You are signer ${signerIndex + 1} of ${signerCount}. The next signer will receive the PDF after your signature is completed.\n\n` : ''}Open PDF: ${reviewUrl}\nExpires: ${expiresAt}`,
+  })
+  return emailResult
+}
+
+const notifyFinalSignedCopy = async ({ admin, ownerId, documentName, signerRows, signedPdfBytes, signedCopyUrl }) => {
+  let ownerEmail = ''
+  try {
+    const owner = await admin.auth.admin.getUserById(ownerId)
+    ownerEmail = owner.data?.user?.email || ''
+  } catch (ownerLookupError) {
+    console.error('[signature-owner-lookup]', ownerLookupError?.message || ownerLookupError)
+  }
+  const signedFileName = `${safeFileName(documentName).replace(/\.pdf$/i, '')}-signed.pdf`
+  const canAttach = signedPdfBytes.length <= 29 * 1024 * 1024
+  const attachments = canAttach ? [{ content: Buffer.from(signedPdfBytes).toString('base64'), filename: signedFileName }] : []
+  const signerEmails = signerRows.map((row) => row.recipient_email).filter((email) => email && email.includes('@'))
+  const notificationRecipients = [...new Set([ownerEmail, ...signerEmails].filter((email) => email && email.includes('@')))]
+  const notifiedEmails = []
+  const signerNames = signerRows.map((row) => row.recipient_name || row.recipient_email).filter(Boolean).join(', ')
+  for (const recipient of notificationRecipients) {
+    try {
+      const emailResult = await sendResendEmail({
+        to: recipient,
+        subject: `Signed PDF: ${documentName}`,
+        replyTo: process.env.EMAIL_FROM,
+        text: `${documentName} was signed by ${signerNames}.${signedCopyUrl ? ` Download link (valid for 7 days): ${signedCopyUrl}` : ''}${canAttach ? ' The signed PDF is attached.' : ' The PDF is available from your updateMyPDF workspace.'}`,
+        html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#182238"><p><strong>${escapeHtml(documentName)}</strong> was fully signed by ${escapeHtml(signerNames)}.</p>${signedCopyUrl ? `<p><a href="${escapeHtml(signedCopyUrl)}">Download the final signed PDF</a> (link valid for 7 days).</p>` : ''}${canAttach ? '<p>The final signed PDF is also attached to this email.</p>' : ''}</div>`,
+        attachments,
+      })
+      notifiedEmails.push(recipient)
+      try {
+        await addAuditEvent(admin, { ownerId, requestId: signerRows[0]?.id || null, eventType: 'signed_copy_emailed', actorEmail: recipient, details: { provider: 'resend', providerMessageId: emailResult.id || null, attached: canAttach, signerCount: signerRows.length } })
+      } catch (auditError) {
+        console.error('[signature-email-audit]', auditError?.message || auditError)
+      }
+    } catch (notificationError) {
+      console.error('[signature-copy-notification]', recipient, notificationError?.message || notificationError)
+    }
+  }
+  return { notifiedEmails, canAttach }
+}
+
 const runQpdfTransform = async (pdfBuffer, buildArguments) => withTempDirectory(async (directory) => {
   const input = path.join(directory, 'input.pdf')
   const output = path.join(directory, 'output.pdf')
@@ -1236,53 +1288,70 @@ app.post('/api/signatures/request', async (request, response) => {
   try {
     const { admin, user } = await getSupabaseUser(request)
     const documentPath = String(request.body?.documentPath || request.body?.path || '')
-    const recipientEmail = String(request.body?.recipientEmail || '').trim().toLowerCase()
-    const recipientName = String(request.body?.recipientName || '').trim().slice(0, 160)
     const senderName = String(user.user_metadata?.full_name || user.email || '').trim().slice(0, 160)
     const documentName = safeFileName(request.body?.documentName || 'document.pdf')
     const message = String(request.body?.message || '').trim().slice(0, 2000)
     const workflowType = request.body?.workflowType === 'review' ? 'review' : 'signature'
     const documentLanguage = String(request.body?.documentLanguage || '').trim().slice(0, 80)
-    const signaturePlacement = normalizeSignaturePlacement(request.body?.signaturePlacement)
     const requestedExpiry = Number(request.body?.expiresIn || 604800)
     const expiresIn = Math.min(Math.max(Number.isFinite(requestedExpiry) ? requestedExpiry : 604800, 3600), 2592000)
+    const rawSignerList = Array.isArray(request.body?.signers) && request.body.signers.length ? request.body.signers : [{ name: request.body?.recipientName, email: request.body?.recipientEmail, id: 'signer-1' }]
+    const signerList = rawSignerList.slice(0, 8).map((signer, index) => ({
+      id: String(signer?.id || `signer-${index + 1}`).slice(0, 120),
+      name: String(signer?.name || signer?.fullName || '').trim().slice(0, 160),
+      email: String(signer?.email || signer?.recipientEmail || '').trim().toLowerCase().slice(0, 320),
+    }))
+    const signaturePlacements = request.body?.signaturePlacements && typeof request.body.signaturePlacements === 'object' ? request.body.signaturePlacements : {}
+    const signerEntries = signerList.map((signer, index) => ({
+      ...signer,
+      signaturePlacement: normalizeSignaturePlacement(signaturePlacements[signer.id] || (Array.isArray(request.body?.signaturePlacements) ? request.body.signaturePlacements[index] : null) || request.body?.signaturePlacement),
+    }))
     if (!documentPath.startsWith(`${user.id}/`)) return response.status(403).json({ error: 'Bu PDF için imza isteği oluşturma iznin yok.' })
-    if (!recipientEmail || !recipientEmail.includes('@')) return response.status(400).json({ error: 'Geçerli bir alıcı e-posta adresi gerekli.' })
-    if (!recipientName) return response.status(400).json({ error: 'Alıcının adı gerekli.' })
+    if (!signerEntries.length) return response.status(400).json({ error: 'En az bir signer gerekli.' })
+    if (workflowType === 'review' && signerEntries.length > 1) return response.status(400).json({ error: 'İnceleme akışında yalnızca bir kişi seçilebilir.' })
+    if (signerEntries.some((signer) => !signer.email || !signer.email.includes('@'))) return response.status(400).json({ error: 'Her signer için geçerli bir e-posta adresi gerekli.' })
+    if (signerEntries.some((signer) => !signer.name)) return response.status(400).json({ error: 'Her signer için ad soyad gerekli.' })
+    if (new Set(signerEntries.map((signer) => signer.email)).size !== signerEntries.length) return response.status(400).json({ error: 'Aynı e-posta adresi birden fazla signer olarak eklenemez.' })
     const signedSource = await admin.storage.from('pdfs').createSignedUrl(documentPath, 3600)
     if (signedSource.error || !signedSource.data?.signedUrl) return response.status(404).json({ error: 'İmza istenen PDF cloud storage içinde bulunamadı.' })
 
-    const rawToken = randomBytes(32).toString('hex')
+    const batchId = signerEntries.length > 1 ? randomBytes(16).toString('hex') : null
+    const firstRawToken = randomBytes(32).toString('hex')
     const expiresAt = new Date(Date.now() + expiresIn * 1000).toISOString()
-    const { data: inserted, error: insertError } = await admin.from('signature_requests').insert({
+    const batchSigners = signerEntries.map((signer, index) => ({ name: signer.name, email: signer.email, index }))
+    const rows = signerEntries.map((signer, index) => ({
       owner_id: user.id,
       document_path: documentPath,
       document_name: documentName,
       workflow_type: workflowType,
-      recipient_email: recipientEmail,
-      recipient_name: recipientName || null,
+      recipient_email: signer.email,
+      recipient_name: signer.name,
       message: message || null,
-      token_hash: hashAccessToken(rawToken),
+      token_hash: hashAccessToken(index === 0 ? firstRawToken : randomBytes(32).toString('hex')),
       expires_at: expiresAt,
-      metadata: { senderName, senderEmail: user.email, signaturePlacement, documentLanguage: documentLanguage || null },
-    }).select('id').single()
+      metadata: { senderName, senderEmail: user.email, signaturePlacement: signer.signaturePlacement, documentLanguage: documentLanguage || null, batchId, signerIndex: index, signerCount: signerEntries.length, signers: batchSigners, expiresIn },
+    }))
+    const { data: insertedRows, error: insertError } = await admin.from('signature_requests').insert(rows).select('id,recipient_email,recipient_name')
     if (insertError) throw insertError
 
-    const reviewUrl = `${publicAppOrigin}/review/${rawToken}`
+    const firstSigner = signerEntries[0]
+    const firstInserted = insertedRows?.[0]
+    const reviewUrl = `${publicAppOrigin}/review/${firstRawToken}`
     const title = workflowType === 'review' ? 'PDF review request' : 'PDF signature request'
-    const greeting = `Hello ${escapeHtml(recipientName)},`
+    const greeting = `Hello ${escapeHtml(firstSigner.name)},`
     const bodyText = message ? `<p>${escapeHtml(message)}</p>` : ''
+    const workflowNote = signerEntries.length > 1 ? `<p>This is a sequential signing workflow for ${signerEntries.length} people. You are signer 1 of ${signerEntries.length}; the next signer will receive the document after you complete your signature.</p>` : ''
     const emailResult = await sendResendEmail({
-      to: recipientEmail,
+      to: firstSigner.email,
       subject: `${title}: ${documentName}`,
       replyTo: process.env.EMAIL_FROM,
-      html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#182238"><p>${greeting}</p>${bodyText}<p><strong>${escapeHtml(senderName)}</strong> asked you to ${workflowType === 'review' ? 'review' : 'sign'} <strong>${escapeHtml(documentName)}</strong>.</p><p><a href="${escapeHtml(reviewUrl)}" style="display:inline-block;padding:12px 18px;background:#536dff;color:#fff;text-decoration:none;border-radius:8px">Open PDF</a></p><p>This link expires on ${escapeHtml(expiresAt)}.</p></div>`,
-      text: `${greeting.replaceAll('&lt;', '<').replaceAll('&gt;', '>')}\n\n${senderName} asked you to ${workflowType === 'review' ? 'review' : 'sign'} ${documentName}.\n${message}\n\nOpen PDF: ${reviewUrl}\nExpires: ${expiresAt}`,
+      html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#182238"><p>${greeting}</p>${bodyText}<p><strong>${escapeHtml(senderName)}</strong> asked you to ${workflowType === 'review' ? 'review' : 'sign'} <strong>${escapeHtml(documentName)}</strong>.</p>${workflowNote}<p><a href="${escapeHtml(reviewUrl)}" style="display:inline-block;padding:12px 18px;background:#e45235;color:#fff;text-decoration:none;border-radius:8px">Open PDF</a></p><p>This link expires on ${escapeHtml(expiresAt)}.</p></div>`,
+      text: `${greeting.replaceAll('&lt;', '<').replaceAll('&gt;', '>')}\n\n${senderName} asked you to ${workflowType === 'review' ? 'review' : 'sign'} ${documentName}.\n${message}\n${signerEntries.length > 1 ? `\nYou are signer 1 of ${signerEntries.length}. The next signer will receive the PDF after you complete your signature.\n` : ''}\nOpen PDF: ${reviewUrl}\nExpires: ${expiresAt}`,
     })
-    await admin.from('signature_requests').update({ sent_at: new Date().toISOString() }).eq('id', inserted.id)
-    await addAuditEvent(admin, { ownerId: user.id, requestId: inserted.id, eventType: 'request_created', actorEmail: user.email, details: { workflowType, recipientEmail, documentName } })
-    await addAuditEvent(admin, { ownerId: user.id, requestId: inserted.id, eventType: 'email_sent', actorEmail: user.email, details: { provider: 'resend', providerMessageId: emailResult.id || null } })
-    response.json({ id: inserted.id, status: 'pending', workflowType, expiresAt, reviewUrl, emailId: emailResult.id || null })
+    await admin.from('signature_requests').update({ sent_at: new Date().toISOString() }).eq('id', firstInserted.id)
+    await addAuditEvent(admin, { ownerId: user.id, requestId: firstInserted.id, eventType: 'request_created', actorEmail: user.email, details: { workflowType, recipientEmail: firstSigner.email, documentName, signerCount: signerEntries.length, batchId } })
+    await addAuditEvent(admin, { ownerId: user.id, requestId: firstInserted.id, eventType: 'email_sent', actorEmail: user.email, details: { provider: 'resend', providerMessageId: emailResult.id || null, signerCount: signerEntries.length } })
+    response.json({ id: firstInserted.id, requestIds: (insertedRows || []).map((row) => row.id), status: 'pending', workflowType, expiresAt, reviewUrl, emailId: emailResult.id || null, signerCount: signerEntries.length, signers: batchSigners })
   } catch (error) {
     console.error('[signature-request]', error?.message || error)
     const status = error?.status || (signatureRequestError(error) ? 503 : error?.code === 'EMAIL_PROVIDER_ERROR' ? 502 : 500)
@@ -1304,6 +1373,11 @@ app.post('/api/signatures/:id/resend', requireAuth, async (request, response) =>
     if (error) throw error
     if (!data) return response.status(404).json({ error: 'İmza isteği bulunamadı.' })
     if (['signed', 'declined', 'cancelled'].includes(data.status)) return response.status(409).json({ error: 'Bu istek tekrar gönderilemez.' })
+    if (data.metadata?.batchId && Number(data.metadata?.signerIndex) > 0) {
+      const { data: previousSigner, error: previousError } = await admin.from('signature_requests').select('status').eq('owner_id', user.id).contains('metadata', { batchId: data.metadata.batchId }).eq('metadata->>signerIndex', String(Number(data.metadata.signerIndex) - 1)).maybeSingle()
+      if (previousError) throw previousError
+      if (!previousSigner || previousSigner.status !== 'signed') return response.status(409).json({ error: 'Bu signer’ın sırası henüz gelmedi.' })
+    }
     const signedSource = await admin.storage.from('pdfs').createSignedUrl(data.document_path, 3600)
     if (signedSource.error || !signedSource.data?.signedUrl) return response.status(404).json({ error: 'İmza istenen PDF cloud storage içinde bulunamadı.' })
     const requestedExpiry = Number(request.body?.expiresIn || 604800)
@@ -1476,7 +1550,7 @@ app.post('/api/signatures/:token/sign', async (request, response) => {
     const signatureText = String(request.body?.signatureText || '').trim().slice(0, 500)
     const signatureStyle = normalizeSignatureStyle(request.body?.signatureStyle)
     if (!signatureText) return response.status(400).json({ error: 'İmza metni gerekli.' })
-    const { data, error } = await admin.from('signature_requests').select('id,owner_id,recipient_email,recipient_name,document_path,document_name,workflow_type,status,expires_at,metadata').eq('token_hash', hashAccessToken(request.params.token)).maybeSingle()
+    const { data, error } = await admin.from('signature_requests').select('id,owner_id,recipient_email,recipient_name,document_path,document_name,workflow_type,status,expires_at,message,metadata').eq('token_hash', hashAccessToken(request.params.token)).maybeSingle()
     if (error) throw error
     if (!data) return response.status(404).json({ error: 'İmza bağlantısı bulunamadı.' })
     if (new Date(data.expires_at).getTime() <= Date.now()) return response.status(410).json({ error: 'İmza bağlantısının süresi dolmuş.' })
@@ -1537,6 +1611,9 @@ app.post('/api/signatures/:token/sign', async (request, response) => {
     const { error: uploadError } = await admin.storage.from('pdfs').upload(signedPath, signedPdf.pdfBytes, { contentType: 'application/pdf', upsert: false })
     if (uploadError) throw uploadError
     const signedAt = new Date().toISOString()
+    const batchId = data.metadata?.batchId || null
+    const signerIndex = Number.isFinite(Number(data.metadata?.signerIndex)) ? Number(data.metadata.signerIndex) : 0
+    const signerCount = Math.max(1, Number(data.metadata?.signerCount) || 1)
     const metadata = { ...(data.metadata || {}), signatureStyle, signedDocumentPath: signedPath, signedAt, signedDocumentSha256: signedPdfSha256 }
     signatureStage = 'save-signature-record'
     const { error: updateError } = await admin.from('signature_requests').update({ status: 'signed', signed_at: signedAt, signature_text: signatureText, metadata }).eq('id', data.id)
@@ -1546,41 +1623,45 @@ app.post('/api/signatures/:token/sign', async (request, response) => {
     } catch (auditError) {
       console.error('[signature-audit-after-sign]', auditError?.message || auditError)
     }
-    let ownerEmail = ''
-    try {
-      const owner = await admin.auth.admin.getUserById(data.owner_id)
-      ownerEmail = owner.data?.user?.email || ''
-    } catch (ownerLookupError) {
-      console.error('[signature-owner-lookup]', ownerLookupError?.message || ownerLookupError)
+    let batchRows = [data]
+    if (batchId) {
+      const { data: loadedBatchRows, error: batchError } = await admin.from('signature_requests').select('id,owner_id,document_path,document_name,recipient_email,recipient_name,status,signed_at,metadata').eq('owner_id', data.owner_id).contains('metadata', { batchId })
+      if (batchError) throw batchError
+      batchRows = (loadedBatchRows || []).sort((left, right) => (Number(left.metadata?.signerIndex) || 0) - (Number(right.metadata?.signerIndex) || 0))
     }
     const signedCopy = await admin.storage.from('pdfs').createSignedUrl(signedPath, 604800)
     const signedCopyUrl = signedCopy.data?.signedUrl || null
-    const signedFileName = `${safeFileName(data.document_name).replace(/\.pdf$/i, '')}-signed.pdf`
-    const canAttach = signedPdf.pdfBytes.length <= 29 * 1024 * 1024
-    const attachments = canAttach ? [{ content: Buffer.from(signedPdf.pdfBytes).toString('base64'), filename: signedFileName }] : []
-    const notificationRecipients = [...new Set([ownerEmail, data.recipient_email].filter((email) => email && email.includes('@')))]
-    const notifiedEmails = []
-    for (const recipient of notificationRecipients) {
+    const nextSigner = batchRows.find((row) => Number(row.metadata?.signerIndex) === signerIndex + 1 && !['signed', 'declined', 'cancelled'].includes(row.status))
+    if (nextSigner) {
+      const nextRawToken = randomBytes(32).toString('hex')
+      const nextExpiresAt = new Date(Date.now() + Math.max(3600, Number(data.metadata?.expiresIn) || 604800) * 1000).toISOString()
+      const nextMetadata = { ...(nextSigner.metadata || {}), previousSignedDocumentPath: signedPath, previousSignedAt: signedAt }
+      const { error: nextUpdateError } = await admin.from('signature_requests').update({ document_path: signedPath, token_hash: hashAccessToken(nextRawToken), status: 'pending', expires_at: nextExpiresAt, sent_at: new Date().toISOString(), viewed_at: null, metadata: nextMetadata }).eq('id', nextSigner.id).eq('owner_id', data.owner_id)
+      if (nextUpdateError) throw nextUpdateError
+      const nextReviewUrl = `${publicAppOrigin}/review/${nextRawToken}`
+      let nextEmailId = null
+      let nextEmailError = null
       try {
-        const emailResult = await sendResendEmail({
-          to: recipient,
-          subject: `Signed PDF: ${data.document_name}`,
-          replyTo: process.env.EMAIL_FROM,
-          text: `${data.document_name} was signed by ${data.recipient_email}.${signedCopyUrl ? ` Download link (valid for 7 days): ${signedCopyUrl}` : ''}${canAttach ? ' The signed PDF is attached.' : ' The PDF is available from your updateMyPDF cloud storage.'}`,
-          html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#182238"><p><strong>${escapeHtml(data.document_name)}</strong> was signed by ${escapeHtml(data.recipient_email)}.</p>${signedCopyUrl ? `<p><a href="${escapeHtml(signedCopyUrl)}">Download the signed PDF</a> (link valid for 7 days).</p>` : ''}${canAttach ? '<p>The signed PDF is also attached to this email.</p>' : ''}</div>`,
-          attachments,
-        })
-        notifiedEmails.push(recipient)
-        try {
-          await addAuditEvent(admin, { ownerId: data.owner_id, requestId: data.id, eventType: 'signed_copy_emailed', actorEmail: recipient, details: { provider: 'resend', providerMessageId: emailResult.id || null, attached: canAttach } })
-        } catch (auditError) {
-          console.error('[signature-email-audit]', auditError?.message || auditError)
-        }
-      } catch (notificationError) {
-        console.error('[signature-copy-notification]', recipient, notificationError?.message || notificationError)
+        const nextEmail = await sendSignatureInviteEmail({ recipientEmail: nextSigner.recipient_email, recipientName: nextSigner.recipient_name, senderName: data.metadata?.senderName || data.owner_id, documentName: data.document_name, workflowType: data.workflow_type, message: data.message, reviewUrl: nextReviewUrl, expiresAt: nextExpiresAt, signerIndex: signerIndex + 1, signerCount })
+        nextEmailId = nextEmail.id || null
+        await addAuditEvent(admin, { ownerId: data.owner_id, requestId: nextSigner.id, eventType: 'email_sent', actorEmail: data.recipient_email, details: { provider: 'resend', providerMessageId: nextEmail.id || null, signerIndex: signerIndex + 1, batchId } })
+      } catch (inviteError) {
+        nextEmailError = inviteError.message || 'Sıradaki signer’a e-posta gönderilemedi.'
+        console.error('[signature-next-invite]', inviteError?.message || inviteError)
+      }
+      response.json({ ok: true, status: 'signed', signedAt, signedDocumentPath: signedPath, signedCopyUrl, final: false, signerIndex, signerCount, nextSigner: { name: nextSigner.recipient_name, email: nextSigner.recipient_email, index: signerIndex + 1 }, nextReviewUrl, nextEmailId, nextEmailError })
+      return
+    }
+    const finalMetadata = { finalSignedDocumentPath: signedPath, finalSignedAt: signedAt, finalSignedDocumentSha256: signedPdfSha256 }
+    if (batchId) {
+      for (const row of batchRows) {
+        const rowMetadata = { ...(row.metadata || {}), ...finalMetadata, signedDocumentPath: signedPath }
+        const { error: finalUpdateError } = await admin.from('signature_requests').update({ metadata: rowMetadata }).eq('id', row.id).eq('owner_id', data.owner_id)
+        if (finalUpdateError) throw finalUpdateError
       }
     }
-    response.json({ ok: true, status: 'signed', signedAt, signedDocumentPath: signedPath, signedCopyUrl, notifiedEmails })
+    const finalNotification = await notifyFinalSignedCopy({ admin, ownerId: data.owner_id, documentName: data.document_name, signerRows: batchRows, signedPdfBytes: signedPdf.pdfBytes, signedCopyUrl })
+    response.json({ ok: true, status: 'signed', signedAt, signedDocumentPath: signedPath, signedCopyUrl, final: true, signerIndex, signerCount, notifiedEmails: finalNotification.notifiedEmails, attached: finalNotification.canAttach })
   } catch (error) {
     console.error('[signature-sign]', signatureStage, error?.message || error)
     const publicMessage = signatureRequestError(error)
@@ -1612,6 +1693,10 @@ app.post('/api/signatures/:token/decline', async (request, response) => {
     const metadata = { ...(data.metadata || {}), declinedAt, declineReason: reason || null }
     const { error: updateError } = await admin.from('signature_requests').update({ status: 'declined', metadata }).eq('id', data.id)
     if (updateError) throw updateError
+    if (data.metadata?.batchId) {
+      const { error: batchCancelError } = await admin.from('signature_requests').update({ status: 'cancelled', metadata: { declinedAt, batchStoppedBy: data.recipient_email } }).eq('owner_id', data.owner_id).contains('metadata', { batchId: data.metadata.batchId }).in('status', ['pending', 'viewed'])
+      if (batchCancelError) throw batchCancelError
+    }
     try {
       await addAuditEvent(admin, { ownerId: data.owner_id, requestId: data.id, eventType: 'request_declined', actorEmail: data.recipient_email, details: { reason: reason || null, ip: request.ip || null, userAgent: request.headers['user-agent'] || null } })
     } catch (auditError) {
@@ -1645,12 +1730,15 @@ app.post('/api/signatures/:token/decline', async (request, response) => {
 app.post('/api/signatures/:id/cancel', requireAuth, async (request, response) => {
   try {
     const { admin, user } = request.supabaseContext
-    const { data, error } = await admin.from('signature_requests').select('id,owner_id,document_name,recipient_email,status').eq('id', request.params.id).eq('owner_id', user.id).maybeSingle()
+    const { data, error } = await admin.from('signature_requests').select('id,owner_id,document_name,recipient_email,status,metadata').eq('id', request.params.id).eq('owner_id', user.id).maybeSingle()
     if (error) throw error
     if (!data) return response.status(404).json({ error: 'İmza isteği bulunamadı.' })
     if (['signed', 'declined', 'cancelled', 'expired'].includes(data.status)) return response.status(409).json({ error: 'Bu istek artık iptal edilemez.' })
     const cancelledAt = new Date().toISOString()
-    const { error: updateError } = await admin.from('signature_requests').update({ status: 'cancelled', metadata: { cancelledAt, ...(data.metadata || {}) } }).eq('id', data.id).eq('owner_id', user.id)
+    const updatePayload = { status: 'cancelled', metadata: { ...(data.metadata || {}), cancelledAt } }
+    const { error: updateError } = data.metadata?.batchId
+      ? await admin.from('signature_requests').update(updatePayload).eq('owner_id', user.id).contains('metadata', { batchId: data.metadata.batchId }).in('status', ['pending', 'viewed'])
+      : await admin.from('signature_requests').update(updatePayload).eq('id', data.id).eq('owner_id', user.id)
     if (updateError) throw updateError
     try {
       await addAuditEvent(admin, { ownerId: user.id, requestId: data.id, eventType: 'request_cancelled', actorEmail: user.email, details: { recipientEmail: data.recipient_email } })

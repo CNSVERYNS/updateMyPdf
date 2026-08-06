@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   ArrowLeft,
@@ -369,19 +369,27 @@ function App() {
     setCloudFiles(data.files || [])
     const nextRequests = data.signatureRequests || []
     setWorkspaceRequests(nextRequests)
-    const signedNotifications = nextRequests
-      .filter((request) => request.status === 'signed' && request.signedDocumentUrl)
-      .map((request) => {
+    const signedRequestGroups = [...nextRequests.reduce((groups, request) => {
+      if (request.status !== 'signed' || !request.signedDocumentUrl) return groups
+      const groupKey = request.metadata?.batchId || request.id
+      const current = groups.get(groupKey) || []
+      current.push(request)
+      groups.set(groupKey, current)
+      return groups
+    }, new Map()).values()]
+    const signedNotifications = signedRequestGroups.map((group) => {
+        const request = group[0]
         const review = request.workflow_type === 'review'
-        const actorName = request.recipient_name || request.recipient_email || 'Bir kullanıcı'
+        const actorName = group.length > 1 ? `${group.length} signer` : request.recipient_name || request.recipient_email || 'Bir kullanıcı'
+        const signedAt = group.reduce((latest, item) => new Date(item.signed_at || item.created_at).getTime() > new Date(latest).getTime() ? (item.signed_at || item.created_at) : latest, request.signed_at || request.created_at || new Date().toISOString())
         return {
-          id: `signature-signed:${request.id}`,
+          id: `signature-signed:${request.metadata?.batchId || request.id}`,
           type: 'signature_signed',
           requestId: request.id,
-          title: review ? `${actorName} dosyanı inceledi` : `${actorName} dosyanı imzaladı`,
-          detail: `${request.document_name} · ${new Date(request.signed_at || request.created_at).toLocaleString()}`,
+          title: review ? `${actorName} dosyanı inceledi` : group.length > 1 ? `${actorName} dosyanı imzaladı` : `${actorName} dosyanı imzaladı`,
+          detail: `${request.document_name} · ${new Date(signedAt).toLocaleString()}`,
           signedDocumentUrl: request.signedDocumentUrl,
-          createdAt: request.signed_at || request.created_at || new Date().toISOString(),
+          createdAt: signedAt,
         }
       })
     const newNotifications = signedNotifications.filter((notification) => !knownNotificationIdsRef.current.has(notification.id))
@@ -605,10 +613,12 @@ function App() {
           documentName: file.name,
           recipientEmail: details.recipientEmail,
           recipientName: details.recipientName,
+          signers: details.signers,
           message: details.message,
           workflowType: details.workflowType,
           expiresIn: details.expiresIn,
           signaturePlacement: details.signaturePlacement,
+          signaturePlacements: details.signaturePlacements,
           documentLanguage: assistantProfile?.documentLanguage || '',
         }),
       })
@@ -1199,7 +1209,7 @@ function App() {
       {showHistory && <HistoryDrawer notifications={notifications} readNotificationIds={readNotificationIds} unreadCount={unreadNotificationCount} changes={changes} onNotificationOpen={openNotification} onClose={() => setShowHistory(false)} />}
       {showComparison && <ComparisonDrawer comparison={comparison} onClose={() => setShowComparison(false)} />}
       {showCloudFiles && <CloudFilesDrawer files={cloudFiles} signatureRequests={workspaceRequests} onClose={() => setShowCloudFiles(false)} onOpen={downloadCloudFile} onDelete={deleteCloudFile} onShare={shareCloudFile} onResend={resendSignatureRequest} onCancel={cancelSignatureRequest} />}
-      {showSignatureRequest && <SignatureRequestModal busy={signatureRequestBusy} error={signatureRequestError} result={signatureRequestResult} documentName={file?.name} senderName={session?.user?.user_metadata?.full_name || session?.user?.email} senderEmail={session?.user?.email} pageCount={pageCount} currentPage={currentPage} onClose={() => setShowSignatureRequest(false)} onSubmit={createSignatureRequest} onOpenRequests={() => { setShowSignatureRequest(false); setShowSignatureRequests(true) }} />}
+      {showSignatureRequest && <SignatureRequestModal busy={signatureRequestBusy} error={signatureRequestError} result={signatureRequestResult} documentName={file?.name} fileUrl={fileUrl} senderName={session?.user?.user_metadata?.full_name || session?.user?.email} senderEmail={session?.user?.email} pageCount={pageCount} currentPage={currentPage} onClose={() => setShowSignatureRequest(false)} onSubmit={createSignatureRequest} onOpenRequests={() => { setShowSignatureRequest(false); setShowSignatureRequests(true) }} />}
       {showSignatureRequests && <SignatureRequestsDrawer session={session} authHeaders={authHeaders} onClose={() => setShowSignatureRequests(false)} onCancel={cancelSignatureRequest} onResend={resendSignatureRequest} />}
       {showAuth && <AuthModal mode={authMode} busy={authBusy} error={authError} onModeChange={(mode) => { setAuthMode(mode); setAuthError('') }} onClose={() => setShowAuth(false)} onSubmit={handleAuthSubmit} />}
       {showAccount && session && <AccountManagementModal session={session} busy={profileBusy} error={profileError} onClose={() => setShowAccount(false)} onProfileSave={handleProfileSave} onChangeEmail={requestEmailChange} onConfirmEmailChange={confirmEmailChange} onRequestPasswordCode={requestPasswordVerification} onConfirmPasswordChange={confirmPasswordChange} onOpenPricing={() => { setShowAccount(false); setShowPricing(true) }} onOpenBilling={openBillingPortal} onSignOut={signOut} />}
@@ -1454,35 +1464,77 @@ function CloudFilesDrawer({ files, signatureRequests, onClose, onOpen, onDelete,
   )
 }
 
-function SignatureRequestModal({ busy, error, result, documentName, senderName, senderEmail, pageCount, currentPage, onClose, onSubmit, onOpenRequests }) {
-  const [recipientEmail, setRecipientEmail] = useState('')
-  const [recipientName, setRecipientName] = useState('')
+function SignatureRequestModal({ busy, error, result, documentName, fileUrl, senderName, senderEmail, pageCount, currentPage, onClose, onSubmit, onOpenRequests }) {
+  const createSigner = (index = 0) => ({ id: `signer-${Date.now()}-${index}-${Math.random().toString(16).slice(2)}`, name: '', email: '' })
+  const [signers, setSigners] = useState(() => [createSigner(0)])
+  const [activeSignerId, setActiveSignerId] = useState('')
   const [message, setMessage] = useState('')
   const [workflowType, setWorkflowType] = useState('signature')
   const [expiresIn, setExpiresIn] = useState('604800')
-  const [placement, setPlacement] = useState({ page: Math.max(1, currentPage || 1), left: 0.16, top: 0.72, width: 0.56, height: 0.11 })
+  const [placements, setPlacements] = useState({})
+  const [hoverPlacement, setHoverPlacement] = useState(null)
   const [copied, setCopied] = useState(false)
   const [formError, setFormError] = useState('')
+  const previewPageCount = Math.max(1, pageCount || 1)
+  const handlePreviewPageCount = useCallback(() => {}, [])
+
+  useEffect(() => {
+    if (!activeSignerId && signers[0]) setActiveSignerId(signers[0].id)
+  }, [activeSignerId, signers])
+
+  const activeSigner = signers.find((signer) => signer.id === activeSignerId) || signers[0]
+  const getPlacement = (signer, index = 0) => placements[signer?.id] || { page: Math.max(1, currentPage || 1), left: 0.1, top: Math.min(0.78, 0.58 + index * 0.11), width: 0.42, height: 0.14, placed: false }
+  const activeSignerIndex = Math.max(0, signers.findIndex((signer) => signer.id === activeSigner?.id))
+  const activePlacement = getPlacement(activeSigner, activeSignerIndex)
+
+  const updateSigner = (id, key, value) => setSigners((current) => current.map((signer) => signer.id === id ? { ...signer, [key]: value } : signer))
+  const addSigner = () => {
+    if (signers.length >= 8) return
+    const signer = createSigner(signers.length)
+    setSigners((current) => [...current, signer])
+    setActiveSignerId(signer.id)
+    setFormError('')
+  }
+  const removeSigner = (id) => {
+    if (signers.length <= 1) return
+    const next = signers.filter((signer) => signer.id !== id)
+    setSigners(next)
+    if (activeSignerId === id) setActiveSignerId(next[0]?.id || '')
+    setPlacements((current) => { const nextPlacements = { ...current }; delete nextPlacements[id]; return nextPlacements })
+  }
+
+  const placementFromPointer = (event) => {
+    const paper = event.currentTarget.getBoundingClientRect()
+    const width = activePlacement.width
+    const height = activePlacement.height
+    const pointerX = Number.isFinite(event.clientX) ? event.clientX : paper.left + paper.width / 2
+    const pointerY = Number.isFinite(event.clientY) ? event.clientY : paper.top + paper.height / 2
+    return { left: Math.min(1 - width - 0.03, Math.max(0.03, (pointerX - paper.left) / paper.width - width / 2)), top: Math.min(1 - height - 0.03, Math.max(0.03, (pointerY - paper.top) / paper.height - height / 2)), width, height }
+  }
+  const choosePlacement = (event) => {
+    if (!activeSigner) return
+    setPlacements((current) => ({ ...current, [activeSigner.id]: { ...activePlacement, ...placementFromPointer(event), placed: true } }))
+    setHoverPlacement(null)
+    setFormError('')
+  }
+  const previewPlacement = (event) => { if (activeSigner) setHoverPlacement(placementFromPointer(event)) }
+  const selectWorkflow = (value) => {
+    setWorkflowType(value)
+    if (value === 'review' && signers.length > 1) {
+      setSigners((current) => current.slice(0, 1))
+      setActiveSignerId(signers[0]?.id || '')
+    }
+  }
 
   const submit = (event) => {
     event.preventDefault()
-    if (!recipientName.trim()) {
-      setFormError('İmzalayacak kişinin adı gerekli.')
-      return
-    }
+    const normalizedSigners = signers.map((signer) => ({ name: signer.name.trim(), email: signer.email.trim().toLowerCase(), id: signer.id }))
+    if (normalizedSigners.some((signer) => !signer.name)) return setFormError('Her signer için ad soyad gerekli.')
+    if (normalizedSigners.some((signer) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(signer.email))) return setFormError('Her signer için geçerli bir e-posta adresi yaz.')
+    if (new Set(normalizedSigners.map((signer) => signer.email)).size !== normalizedSigners.length) return setFormError('Aynı e-posta adresi birden fazla signer olarak eklenemez.')
+    if (workflowType === 'signature' && normalizedSigners.some((signer) => !placements[signer.id]?.placed)) return setFormError('Her signer’ı seçip PDF üzerinde imza alanını yerleştir.')
     setFormError('')
-    onSubmit({ recipientEmail: recipientEmail.trim(), recipientName: recipientName.trim(), message: message.trim(), workflowType, expiresIn: Number(expiresIn), signaturePlacement: placement })
-  }
-
-  const choosePlacement = (event) => {
-    const paper = event.currentTarget.getBoundingClientRect()
-    const width = placement.width
-    const height = placement.height
-    const pointerX = Number.isFinite(event.clientX) ? event.clientX : paper.left + paper.width / 2
-    const pointerY = Number.isFinite(event.clientY) ? event.clientY : paper.top + paper.height / 2
-    const left = Math.min(1 - width - 0.03, Math.max(0.03, (pointerX - paper.left) / paper.width - width / 2))
-    const top = Math.min(1 - height - 0.03, Math.max(0.03, (pointerY - paper.top) / paper.height - height / 2))
-    setPlacement((current) => ({ ...current, left, top }))
+    onSubmit({ signers: normalizedSigners, recipientEmail: normalizedSigners[0].email, recipientName: normalizedSigners[0].name, message: message.trim(), workflowType, expiresIn: Number(expiresIn), signaturePlacement: placements[normalizedSigners[0].id] || activePlacement, signaturePlacements: Object.fromEntries(normalizedSigners.map((signer) => [signer.id, placements[signer.id] || getPlacement(signer)])) })
   }
 
   const copyLink = async () => {
@@ -1499,24 +1551,24 @@ function SignatureRequestModal({ busy, error, result, documentName, senderName, 
         {result ? (
           <div className="signature-success">
             <div className="signature-success-icon"><Check size={19} /></div>
-            <strong>{result.workflowType === 'review' ? 'İnceleme linki hazır.' : 'İmza linki e-posta ile gönderildi.'}</strong>
-            <p>{documentName} için güvenli bağlantı oluşturuldu. Alıcı linki açıp PDF’i görüntüleyebilir.</p>
-            <div className="signature-link-box"><span>{result.reviewUrl}</span><button type="button" className="auth-submit" onClick={copyLink}>{copied ? 'Kopyalandı' : 'Linki kopyala'}</button></div>
+            <strong>{result.workflowType === 'review' ? 'İnceleme linki hazır.' : `${result.signerCount || 1} signer için imza akışı başlatıldı.`}</strong>
+            <p>{documentName} için ilk signer’a güvenli bağlantı gönderildi. Her signer tamamladıkça sıradaki kişiye yeni bağlantı gönderilecek; son imzadan sonra final PDF tüm taraflara iletilecek.</p>
+            <div className="signature-link-box"><span>{result.reviewUrl}</span><button type="button" className="auth-submit" onClick={copyLink}>{copied ? 'Kopyalandı' : 'İlk linki kopyala'}</button></div>
             <div className="signature-modal-actions"><button type="button" className="auth-switch" onClick={onOpenRequests}>Talepleri takip et</button><button type="button" className="auth-submit" onClick={onClose}>Kapat</button></div>
           </div>
         ) : (
           <>
-            <p className="auth-description"><strong>{documentName}</strong> dosyasını güvenli bir linkle başka bir kişiye gönder.</p>
+            <p className="auth-description"><strong>{documentName}</strong> dosyasını bir veya daha fazla kişiye sırayla imzalat.</p>
             <form onSubmit={submit}>
               <div className="signature-sender-card"><span>Gönderen hesap</span><strong>{senderName}</strong><small>{senderEmail}</small></div>
-              <div className="signature-placement-field"><div className="signature-placement-heading"><label>İmza alanı</label><span>PDF üzerinde tıklayarak konumu seç</span></div><div className="signature-paper" onClick={choosePlacement} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') choosePlacement(event) }}><div className="signature-paper-line one" /><div className="signature-paper-line two" /><div className="signature-paper-line three" /><div className="signature-placement-marker" style={{ left: `${placement.left * 100}%`, top: `${placement.top * 100}%`, width: `${placement.width * 100}%`, height: `${placement.height * 100}%` }}><PenLine size={11} /><div className="signature-placement-preview"><strong>İmzalayan adı</strong><span>İmza</span></div></div></div><div className="signature-placement-controls"><label>Sayfa<select value={placement.page} onChange={(event) => setPlacement((current) => ({ ...current, page: Number(event.target.value) }))}>{Array.from({ length: Math.max(1, pageCount || 1) }, (_item, index) => <option value={index + 1} key={index + 1}>{index + 1}</option>)}</select></label><span>Seçilen alan imzalı PDF’e aynı konuma işlenecek.</span></div></div>
-              <label>Akış türü<select value={workflowType} onChange={(event) => setWorkflowType(event.target.value)}><option value="signature">İmza iste</option><option value="review">İnceleme iste</option></select></label>
-              <label>Alıcı e-posta<input type="email" value={recipientEmail} onChange={(event) => setRecipientEmail(event.target.value)} required autoComplete="email" placeholder="alici@example.com" /></label>
-              <label>Alıcı adı (opsiyonel)<input value={recipientName} onChange={(event) => setRecipientName(event.target.value)} autoComplete="name" placeholder="Ali Yılmaz" /></label>
+              <div className="signer-list-heading"><div><strong>Signer’lar</strong><span>{signers.length}/8 kişi</span></div><button type="button" className="signer-add-button" onClick={addSigner} disabled={workflowType === 'review' || signers.length >= 8}><span>+</span> Add signer</button></div>
+              <div className="signer-list">{signers.map((signer, index) => { const selected = activeSigner?.id === signer.id; return <div className={`signer-card ${selected ? 'selected' : ''}`} key={signer.id} onClick={() => setActiveSignerId(signer.id)}><div className="signer-card-top"><button type="button" className="signer-select-button" onClick={() => setActiveSignerId(signer.id)}><span>{index + 1}</span><strong>{signer.name || `Signer ${index + 1}`}</strong></button>{signers.length > 1 && <button type="button" className="signer-remove-button" onClick={(event) => { event.stopPropagation(); removeSigner(signer.id) }} aria-label="Signer’ı kaldır"><X size={13} /></button>}</div><input value={signer.name} onClick={() => setActiveSignerId(signer.id)} onChange={(event) => updateSigner(signer.id, 'name', event.target.value)} required placeholder="Full name" autoComplete="name" /><input type="email" value={signer.email} onClick={() => setActiveSignerId(signer.id)} onChange={(event) => updateSigner(signer.id, 'email', event.target.value)} required placeholder="email@example.com" autoComplete="email" /><small>{selected ? 'Şimdi PDF üzerinde bu signer için alanı seç.' : placements[signer.id]?.placed ? 'İmza alanı yerleştirildi' : 'Alan seçmek için tıkla'}</small></div> })}</div>
+              <div className="signature-placement-field"><div className="signature-placement-heading"><label>{activeSigner ? `${activeSigner.name || `Signer ${activeSignerIndex + 1}`} için imza alanı` : 'İmza alanı'}</label><span>Signer’ı seç, sonra PDF üzerinde tıkla</span></div><div className="signature-placement-paper" onClick={choosePlacement} onMouseMove={previewPlacement} onMouseLeave={() => setHoverPlacement(null)} role="button" tabIndex={0} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') choosePlacement(event) }}><PdfPreview src={fileUrl} page={activePlacement.page} onPageCount={handlePreviewPageCount} />{signers.map((signer, index) => { const placement = getPlacement(signer, index); if (placement.page !== activePlacement.page) return null; return <div className={`signature-placement-marker ${signer.id === activeSigner?.id ? 'active' : ''}`} style={{ left: `${placement.left * 100}%`, top: `${placement.top * 100}%`, width: `${placement.width * 100}%`, height: `${placement.height * 100}%` }} key={signer.id}><PenLine size={11} /><div className="signature-placement-preview"><strong>{signer.name || `Signer ${index + 1}`}</strong><span>İmza</span></div></div> })}{hoverPlacement && activeSigner && <div className="signature-placement-marker ghost" style={{ left: `${hoverPlacement.left * 100}%`, top: `${hoverPlacement.top * 100}%`, width: `${hoverPlacement.width * 100}%`, height: `${hoverPlacement.height * 100}%` }}><PenLine size={11} /><div className="signature-placement-preview"><strong>{activeSigner.name || `Signer ${activeSignerIndex + 1}`}</strong><span>Buraya yerleşir</span></div></div>}<div className="signature-placement-help">{activeSigner?.name || `Signer ${activeSignerIndex + 1}`} için alanı yerleştirmek üzere PDF’e tıkla</div></div><div className="signature-placement-controls"><label>Sayfa<select value={activePlacement.page} onChange={(event) => setPlacements((current) => ({ ...current, [activeSigner.id]: { ...activePlacement, page: Number(event.target.value) } }))}>{Array.from({ length: previewPageCount }, (_item, index) => <option value={index + 1} key={index + 1}>{index + 1}</option>)}</select></label><span>Her signer’ın adı üstte, imza alanı altında ayrı ayrı yazdırılacak.</span></div></div>
+              <label>Akış türü<select value={workflowType} onChange={(event) => selectWorkflow(event.target.value)}><option value="signature">E-imza akışı</option><option value="review">İnceleme iste</option></select></label>
               <label>Mesaj (opsiyonel)<textarea className="signature-message-input" value={message} onChange={(event) => setMessage(event.target.value)} rows={3} placeholder="Kısa bir not ekle..." /></label>
               <label>Link geçerliliği<select value={expiresIn} onChange={(event) => setExpiresIn(event.target.value)}><option value="86400">24 saat</option><option value="604800">7 gün</option><option value="2592000">30 gün</option></select></label>
               {(error || formError) && <div className="auth-error">{error || formError}</div>}
-              <button className="auth-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <PenLine size={16} />} {busy ? 'Gönderiliyor...' : 'Güvenli link gönder'}</button>
+              <button className="auth-submit" type="submit" disabled={busy}>{busy ? <LoaderCircle className="spin" size={16} /> : <PenLine size={16} />} {busy ? 'Gönderiliyor...' : `${signers.length} signer’a güvenli link gönder`}</button>
             </form>
           </>
         )}
@@ -2056,6 +2108,7 @@ function ReviewPage({ token }) {
   const [loadError, setLoadError] = useState('')
   const [done, setDone] = useState(false)
   const [notifiedEmails, setNotifiedEmails] = useState([])
+  const [nextSigner, setNextSigner] = useState(null)
   const [resultStatus, setResultStatus] = useState('')
   const [showDecline, setShowDecline] = useState(false)
   const [declineReason, setDeclineReason] = useState('')
@@ -2090,6 +2143,7 @@ function ReviewPage({ token }) {
       setDone(true)
       setResultStatus('signed')
       setNotifiedEmails(data.notifiedEmails || [])
+      setNextSigner(data.nextSigner || null)
       setRequest((current) => current ? { ...current, status: 'signed', signedAt: data.signedAt } : current)
     } catch (submitError) {
       setError(submitError.message)
@@ -2120,7 +2174,7 @@ function ReviewPage({ token }) {
   return (
     <div className="review-shell">
       <header className="review-header"><div className="brand-lockup"><div className="brand-mark"><Sparkles size={17} strokeWidth={2.5} /></div><span className="brand-name">update<span>MyPDF</span></span></div><span className="review-secure"><Check size={13} /> Güvenli PDF workflow</span></header>
-      {loading ? <div className="review-state"><LoaderCircle className="spin" size={25} /><p>PDF hazırlanıyor...</p></div> : loadError ? <div className="review-state review-error"><X size={25} /><h1>Bağlantı açılamadı</h1><p>{loadError}</p></div> : request && <main className="review-layout"><section className="review-viewer"><div className="review-viewer-heading"><FileText size={16} /><strong>{request.documentName}</strong></div><iframe title="İmzalanacak PDF" src={`${request.signedUrl}#toolbar=0&navpanes=0`} /></section><section className="review-card"><div className="review-card-icon"><PenLine size={19} /></div><span className="review-eyebrow">{request.workflowType === 'review' ? 'PDF inceleme isteği' : 'PDF imza isteği'}</span><h1>{request.workflowType === 'review' ? 'Belgeyi incele ve onayla' : 'Belgeyi imzala'}</h1>{request.recipientName && <p className="review-greeting">Merhaba {request.recipientName},</p>}{request.message && <p className="review-message">{request.message}</p>}<p className="review-expiry">Bu bağlantı {new Date(request.expiresAt).toLocaleString()} tarihine kadar geçerli.</p>{done ? <div className={`review-complete ${resultStatus === 'declined' ? 'review-declined' : ''}`}><Check size={20} /><strong>{resultStatus === 'declined' ? 'İstek reddedildi' : 'İşlem tamamlandı'}</strong><p>{resultStatus === 'declined' ? 'Belge sahibine bilgi verildi. Bu bağlantı artık kullanılamaz.' : notifiedEmails.length >= 2 ? 'İmzalı PDF, belge sahibine ve imzalayan kişiye e-posta ile gönderildi.' : notifiedEmails.length === 1 ? 'İmza kaydedildi ve imzalı PDF e-posta ile gönderildi.' : 'Yanıtın kaydedildi. E-posta gönderimi daha sonra tekrar denenecek.'}</p></div> : <form className="review-form" onSubmit={submitSignature}><label>{request.workflowType === 'review' ? 'Onay adı' : 'İmza metni'}<input value={signatureText} onChange={(event) => setSignatureText(event.target.value)} required maxLength={500} placeholder="Adını ve soyadını yaz" /></label>{request.workflowType !== 'review' && <fieldset className="signature-style-field"><legend>İmza stilini seç</legend><div className="signature-style-grid">{signatureStyles.map((style) => <button type="button" className={`signature-style-option ${signatureStyle === style.id ? 'selected' : ''}`} onClick={() => setSignatureStyle(style.id)} key={style.id}><span className={`signature-style-sample ${style.id}`}>{signatureText || 'Ad Soyad'}</span><small>{style.label}</small><em>{style.description}</em></button>)}</div></fieldset>}{error && <div className="auth-error">{error}</div>}<button className="auth-submit" type="submit" disabled={busy || !signatureText.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {busy ? 'Kaydediliyor...' : request.workflowType === 'review' ? 'İncelemeyi tamamla' : 'PDF’i imzala'}</button>{request.workflowType !== 'review' && !showDecline && <button className="review-decline-link" type="button" onClick={() => setShowDecline(true)}>İmzalamak istemiyorum</button>}{showDecline && request.workflowType !== 'review' && <div className="review-decline-box"><label>Reddetme nedeni (opsiyonel)<textarea value={declineReason} onChange={(event) => setDeclineReason(event.target.value)} rows={3} maxLength={1000} placeholder="Kısa bir neden yazabilirsin" /></label><div className="review-decline-actions"><button className="review-decline-cancel" type="button" onClick={() => setShowDecline(false)} disabled={declineBusy}>Vazgeç</button><button className="review-decline-confirm" type="button" onClick={submitDecline} disabled={declineBusy}>{declineBusy ? <LoaderCircle className="spin" size={14} /> : null} İsteği reddet</button></div></div>}</form>}<p className="review-disclaimer">Bu işlem, belge sahibinin gönderdiği PDF üzerinde elektronik onay kaydı oluşturur.</p></section></main>}
+      {loading ? <div className="review-state"><LoaderCircle className="spin" size={25} /><p>PDF hazırlanıyor...</p></div> : loadError ? <div className="review-state review-error"><X size={25} /><h1>Bağlantı açılamadı</h1><p>{loadError}</p></div> : request && <main className="review-layout"><section className="review-viewer"><div className="review-viewer-heading"><FileText size={16} /><strong>{request.documentName}</strong></div><iframe title="İmzalanacak PDF" src={`${request.signedUrl}#toolbar=0&navpanes=0`} /></section><section className="review-card"><div className="review-card-icon"><PenLine size={19} /></div><span className="review-eyebrow">{request.workflowType === 'review' ? 'PDF inceleme isteği' : 'PDF imza isteği'}</span><h1>{request.workflowType === 'review' ? 'Belgeyi incele ve onayla' : 'Belgeyi imzala'}</h1>{request.recipientName && <p className="review-greeting">Merhaba {request.recipientName},</p>}{request.message && <p className="review-message">{request.message}</p>}<p className="review-expiry">Bu bağlantı {new Date(request.expiresAt).toLocaleString()} tarihine kadar geçerli.</p>{done ? <div className={`review-complete ${resultStatus === 'declined' ? 'review-declined' : ''}`}><Check size={20} /><strong>{resultStatus === 'declined' ? 'İstek reddedildi' : nextSigner ? 'İmzan kaydedildi' : 'İşlem tamamlandı'}</strong><p>{resultStatus === 'declined' ? 'Belge sahibine bilgi verildi. Bu bağlantı artık kullanılamaz.' : nextSigner ? `${nextSigner.name} sıradaki signer olarak davet edildi. Onun işlemi tamamlandıktan sonra final PDF tüm taraflara gönderilecek.` : notifiedEmails.length >= 2 ? 'İmzalı PDF, belge sahibine ve imzalayan kişiye e-posta ile gönderildi.' : notifiedEmails.length === 1 ? 'İmza kaydedildi ve imzalı PDF e-posta ile gönderildi.' : 'Yanıtın kaydedildi. E-posta gönderimi daha sonra tekrar denenecek.'}</p></div> : <form className="review-form" onSubmit={submitSignature}><label>{request.workflowType === 'review' ? 'Onay adı' : 'İmza metni'}<input value={signatureText} onChange={(event) => setSignatureText(event.target.value)} required maxLength={500} placeholder="Adını ve soyadını yaz" /></label>{request.workflowType !== 'review' && <fieldset className="signature-style-field"><legend>İmza stilini seç</legend><div className="signature-style-grid">{signatureStyles.map((style) => <button type="button" className={`signature-style-option ${signatureStyle === style.id ? 'selected' : ''}`} onClick={() => setSignatureStyle(style.id)} key={style.id}><span className={`signature-style-sample ${style.id}`}>{signatureText || 'Ad Soyad'}</span><small>{style.label}</small><em>{style.description}</em></button>)}</div></fieldset>}{error && <div className="auth-error">{error}</div>}<button className="auth-submit" type="submit" disabled={busy || !signatureText.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {busy ? 'Kaydediliyor...' : request.workflowType === 'review' ? 'İncelemeyi tamamla' : 'PDF’i imzala'}</button>{request.workflowType !== 'review' && !showDecline && <button className="review-decline-link" type="button" onClick={() => setShowDecline(true)}>İmzalamak istemiyorum</button>}{showDecline && request.workflowType !== 'review' && <div className="review-decline-box"><label>Reddetme nedeni (opsiyonel)<textarea value={declineReason} onChange={(event) => setDeclineReason(event.target.value)} rows={3} maxLength={1000} placeholder="Kısa bir neden yazabilirsin" /></label><div className="review-decline-actions"><button className="review-decline-cancel" type="button" onClick={() => setShowDecline(false)} disabled={declineBusy}>Vazgeç</button><button className="review-decline-confirm" type="button" onClick={submitDecline} disabled={declineBusy}>{declineBusy ? <LoaderCircle className="spin" size={14} /> : null} İsteği reddet</button></div></div>}</form>}<p className="review-disclaimer">Bu işlem, belge sahibinin gönderdiği PDF üzerinde elektronik onay kaydı oluşturur.</p></section></main>}
     </div>
   )
 }
