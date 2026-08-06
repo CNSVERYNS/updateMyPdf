@@ -245,6 +245,7 @@ button { cursor: pointer; }
 .signed-document-link:hover { color: white; text-decoration: underline; }
 .request-status { flex: 0 0 auto; padding: 4px 6px; border-radius: 4px; color: #bca9ff; background: rgba(129, 100, 219, .15); font-family: 'DM Mono', monospace; font-size: 8px; font-style: normal; text-transform: uppercase; }
 .request-status.signed { color: #7fe0c5; background: rgba(53, 151, 126, .14); }
+.request-status.pending { color: #d8a35a; background: rgba(201, 142, 55, .14); }
 .request-status.expired, .request-status.declined, .request-status.cancelled { color: #f0a6b0; background: rgba(195, 78, 103, .12); }
 
 .review-shell { min-height: 100vh; color: #e8ebf5; background: #0d1425; }

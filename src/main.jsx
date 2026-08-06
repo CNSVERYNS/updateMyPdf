@@ -1203,9 +1203,12 @@ function CloudFilesDrawer({ files, signatureRequests, onClose, onOpen, onDelete,
   const [error, setError] = useState('')
   const [tab, setTab] = useState('all')
   const [busyId, setBusyId] = useState('')
-  const signedFiles = (files || []).filter((file) => file.isSignedCopy)
-  const signedRequests = (signatureRequests || []).filter((request) => request.status === 'signed' && !request.signedDocumentPath)
-  const pendingRequests = (signatureRequests || []).filter((request) => ['pending', 'viewed'].includes(request.status))
+  const allFiles = files || []
+  const allRequests = signatureRequests || []
+  const signedFiles = allFiles.filter((file) => file.isSignedCopy)
+  const signedRequests = allRequests.filter((request) => request.status === 'signed' && !request.signedDocumentPath)
+  const pendingRequests = allRequests.filter((request) => ['pending', 'viewed'].includes(request.status))
+  const pendingPaths = new Set(pendingRequests.map((request) => request.document_path).filter(Boolean))
 
   const runRequestAction = async (request, action) => {
     setBusyId(request.id)
@@ -1227,16 +1230,17 @@ function CloudFilesDrawer({ files, signatureRequests, onClose, onOpen, onDelete,
         <button className="icon-button light" onClick={onClose}><X size={17} /></button>
       </div>
       <div className="workspace-tabs">
-        <button className={tab === 'all' ? 'active' : ''} onClick={() => setTab('all')}>Tüm dosyalar <span>{files.length}</span></button>
+        <button className={tab === 'all' ? 'active' : ''} onClick={() => setTab('all')}>Tüm dosyalar <span>{allFiles.length}</span></button>
         <button className={tab === 'signed' ? 'active' : ''} onClick={() => setTab('signed')}>İmzalanan <span>{signedFiles.length + signedRequests.length}</span></button>
         <button className={tab === 'pending' ? 'active' : ''} onClick={() => setTab('pending')}>İmza bekleyen <span>{pendingRequests.length}</span></button>
       </div>
       {error && <div className="auth-error inline-error">{error}</div>}
-      {tab === 'all' && (files.length === 0 ? <div className="history-empty"><Cloud size={20} /><p>Henüz cloud dosyan yok.</p></div> : <div className="cloud-file-list">
-        {files.map((file) => (
+      {tab === 'all' && (allFiles.length === 0 ? <div className="history-empty"><Cloud size={20} /><p>Henüz cloud dosyan yok.</p></div> : <div className="cloud-file-list">
+        {allFiles.map((file) => (
           <div className="cloud-file-item" key={file.path}>
             <FileText size={16} />
             <div className="cloud-file-copy"><strong>{file.name}</strong><span>{file.size ? `${Math.ceil(file.size / 1024)} KB` : 'PDF'}</span></div>
+            {file.isSignedCopy ? <em className="request-status signed">signed</em> : pendingPaths.has(file.path) ? <em className="request-status pending">pending signature</em> : null}
             <button className="icon-button light" title="PDF’i aç" onClick={() => onOpen(file)}><Download size={15} /></button>
             <button className="icon-button light" title="Süreli paylaşım bağlantısı oluştur" onClick={async () => { try { await onShare(file) } catch (shareError) { setError(shareError.message || 'Bağlantı oluşturulamadı.') } }}><Link2 size={15} /></button>
             <button className="icon-button light" title="Cloud’dan sil" onClick={async () => { try { await onDelete(file) } catch (deleteError) { setError(deleteError.message || 'Dosya silinemedi.') } }}><Trash2 size={15} /></button>

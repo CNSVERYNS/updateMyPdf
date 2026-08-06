@@ -739,7 +739,13 @@ For a document request, first identify the user's outcome, audience, document ty
 Research policy: do not use web search during routine intake or for purely creative/personal documents. When the user asks for research, or when current/local rules materially affect a document, set researchNeeded true and use the web_search tool before drafting. Search only after enough facts and jurisdiction are known. Prefer primary government, regulator, court, official standards, or authoritative institutional sources; use current sources and compare sources when rules conflict. Never imply that a search result alone makes the document legally compliant. Put the most useful source URLs in researchSources and explain their role in why. If a source cannot be verified, say so and leave a review note.
 When the required facts are complete, return status draft_ready and write documentContent as a complete, polished, standalone document in the requested language. Harmonize the facts into natural clauses; never paste a raw fact list into the document. Use sensible headings, definitions, dates, payment or performance terms, responsibilities, exceptions, termination, dispute or governing-law terms only when relevant, signature blocks, and appendices when useful. For documents intended to be signed, always finish with a ## Signatures section; the PDF renderer will turn it into aligned signature cards. Do not include markdown fences. Use placeholders only for genuinely optional facts; list every placeholder in complianceNotes. Keep the chat reply warm and concise, for example: "Bilgileri birleştirdim; taslağı hazırladım." For documents with legal or regulated effect, complianceNotes must say that this is a draft, not legal advice, current rules and source applicability must be checked, and a qualified local professional should review it before reliance or signature. Never claim enforceability or guaranteed compliance.`
 
-const assistantModel = (likelyDraft = false) => process.env.OPENAI_ASSISTANT_MODEL || (likelyDraft ? 'gpt-5.6-terra' : 'gpt-5.6-luna')
+const assistantModel = () => process.env.OPENAI_ASSISTANT_MODEL || 'gpt-5.6-luna'
+const pdfEditorModel = () => {
+  const configuredModel = String(process.env.OPENAI_MODEL || '').trim()
+  // Migrate the previous default automatically so an older Render env does not
+  // silently keep the expensive general model after the Luna rollout.
+  return !configuredModel || configuredModel === 'gpt-5.6' ? 'gpt-5.6-luna' : configuredModel
+}
 const assistantReasoning = () => process.env.OPENAI_ASSISTANT_REASONING || 'low'
 const normalizeAssistantSources = (sources) => (Array.isArray(sources) ? sources : [])
   .filter((source) => source && typeof source.url === 'string' && /^https?:\/\//i.test(source.url))
@@ -954,7 +960,7 @@ app.get('/api/workspace', async (request, response) => {
     }))
     let requestRows = []
     let signatureTableConfigured = true
-    const { data: loadedRequestRows, error: requestsError } = await admin.from('signature_requests').select('id,document_name,workflow_type,recipient_email,recipient_name,status,expires_at,created_at,sent_at,viewed_at,signed_at,message,metadata').eq('owner_id', user.id).order('created_at', { ascending: false })
+    const { data: loadedRequestRows, error: requestsError } = await admin.from('signature_requests').select('id,document_path,document_name,workflow_type,recipient_email,recipient_name,status,expires_at,created_at,sent_at,viewed_at,signed_at,message,metadata').eq('owner_id', user.id).order('created_at', { ascending: false })
     if (requestsError && signatureRequestError(requestsError)) {
       signatureTableConfigured = false
       console.warn('[workspace-list] signature_requests migration is not available yet')
@@ -1354,7 +1360,7 @@ app.post('/api/ai/assistant', async (request, response) => {
       { role: 'user', content: [{ type: 'input_text', text: `Current user message:\n${message}\n\nCompact structured profile from earlier turns:\n${profileContext}` }] },
     ]
     const result = await client.responses.create({
-      model: assistantModel(likelyDraft),
+      model: assistantModel(),
       reasoning: { effort: likelyDraft ? (process.env.OPENAI_ASSISTANT_DRAFT_REASONING || 'medium') : assistantReasoning() },
       store: false,
       instructions: documentAssistantInstructions,
@@ -1383,7 +1389,7 @@ app.post('/api/ai/assistant', async (request, response) => {
       generatedPdf = pdfBytes.toString('base64')
       generatedFileName = `${safeFileName(title).replace(/\.pdf$/i, '') || 'document-draft'}.pdf`
     }
-    response.json({ ...assistantResult, generatedPdf, generatedFileName, model: assistantModel(likelyDraft), reasoningEffort: likelyDraft ? (process.env.OPENAI_ASSISTANT_DRAFT_REASONING || 'medium') : assistantReasoning() })
+    response.json({ ...assistantResult, generatedPdf, generatedFileName, model: assistantModel(), reasoningEffort: likelyDraft ? (process.env.OPENAI_ASSISTANT_DRAFT_REASONING || 'medium') : assistantReasoning() })
   } catch (error) {
     console.error('[ai-assistant]', error?.message || error)
     const status = error?.status === 401 ? 401 : 500
@@ -1415,7 +1421,7 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
     })
     content.push({ type: 'input_text', text: prompt })
     const result = await client.responses.create({
-      model: process.env.OPENAI_MODEL || 'gpt-5.6',
+      model: pdfEditorModel(),
       instructions: systemInstructions,
       input: [{
         role: 'user',
@@ -1495,7 +1501,7 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
       extractedText,
       audioOverview,
       ocrPages,
-      model: process.env.OPENAI_MODEL || 'gpt-5.6',
+      model: pdfEditorModel(),
       sourceFile: sourceFile.originalname || 'document.pdf',
     })
   } catch (error) {
