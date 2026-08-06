@@ -59,14 +59,14 @@ const pricingPlans = [
     name: 'Basic',
     price: '9.99',
     description: 'PDF düzenlemeye yeni başlayanlar için.',
-    features: ['100 AI kredisi / ay', '50 sayfaya kadar PDF', '1 GB güvenli cloud', 'Standart işlem kuyruğu'],
+    features: ['100 AI kredisi / ay · ≈ 50 sayfa düzenleme', '50 sayfaya kadar tek PDF', '1 GB güvenli cloud', 'Standart işlem kuyruğu'],
   },
   {
     id: 'pro',
     name: 'Pro',
     price: '24.99',
     description: 'Düzenli PDF kullanan profesyoneller için.',
-    features: ['500 AI kredisi / ay', '250 sayfaya kadar PDF', '10 GB güvenli cloud', 'Öncelikli işlem kuyruğu'],
+    features: ['500 AI kredisi / ay · ≈ 250 sayfa düzenleme', '250 sayfaya kadar tek PDF', '10 GB güvenli cloud', 'Öncelikli işlem kuyruğu'],
     featured: true,
   },
   {
@@ -74,7 +74,7 @@ const pricingPlans = [
     name: 'Ultimate',
     price: '59.99',
     description: 'Yoğun belge ve ekip iş akışları için.',
-    features: ['2.000 AI kredisi / ay', '1.000 sayfaya kadar PDF', '50 GB güvenli cloud', 'En yüksek işlem önceliği'],
+    features: ['2.000 AI kredisi / ay · ≈ 1.000 sayfa düzenleme', '1.000 sayfaya kadar tek PDF', '50 GB güvenli cloud', 'En yüksek işlem önceliği'],
   },
 ]
 
@@ -679,7 +679,7 @@ function App() {
       <header className="topbar">
         <div className="brand-lockup">
           <div className="brand-mark"><Sparkles size={17} strokeWidth={2.5} /></div>
-          <span className="brand-name">pdf<span>maniac</span></span>
+          <span className="brand-name">update<span>MyPDF</span></span>
           <span className="beta-pill">BETA</span>
         </div>
 
@@ -883,7 +883,7 @@ function CapabilitiesDrawer({ summary, onClose }) {
   return (
     <aside className="history-drawer capability-drawer">
       <div className="history-heading">
-        <div><span>PDF MANIAC</span><h2>Yetenekler</h2></div>
+        <div><span>UPDATEMYPDF</span><h2>Yetenekler</h2></div>
         <button className="icon-button light" onClick={onClose}><X size={17} /></button>
       </div>
       <div className="capability-summary">
@@ -1078,7 +1078,7 @@ function AccountModal({ session, busy, error, onClose, onSubmit, onOpenPricing }
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget && !busy) onClose() }}>
       <div className="auth-modal account-modal">
-        <div className="auth-modal-heading"><div><span>PDF MANIAC CLOUD</span><h2>Hesap bilgileri</h2></div><button className="icon-button light" onClick={onClose} disabled={busy}><X size={17} /></button></div>
+        <div className="auth-modal-heading"><div><span>UPDATEMYPDF CLOUD</span><h2>Hesap bilgileri</h2></div><button className="icon-button light" onClick={onClose} disabled={busy}><X size={17} /></button></div>
         <p className="auth-description">Gönderdiğin imza taleplerinde bu ad ve kayıtlı e-posta otomatik gönderen bilgisi olarak kullanılır.</p>
         <div className="account-plan-card"><div><span>Mevcut plan</span><strong>{(session.user.user_metadata?.plan || 'basic').toUpperCase()}</strong></div><button type="button" onClick={onOpenPricing}>Planları gör</button></div>
         <form onSubmit={submit}>
@@ -1108,7 +1108,7 @@ function AuthModal({ mode, busy, error, onModeChange, onClose, onSubmit }) {
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <div className="auth-modal">
-        <div className="auth-modal-heading"><div><span>PDF MANIAC CLOUD</span><h2>{mode === 'login' ? 'Hesabına giriş yap' : 'Hesap oluştur'}</h2></div><button className="icon-button light" onClick={onClose}><X size={17} /></button></div>
+        <div className="auth-modal-heading"><div><span>UPDATEMYPDF CLOUD</span><h2>{mode === 'login' ? 'Hesabına giriş yap' : 'Hesap oluştur'}</h2></div><button className="icon-button light" onClick={onClose}><X size={17} /></button></div>
         <p className="auth-description">PDF yüklemek, AI ile düzenlemek ve dışa aktarmak için ücretsiz hesabınla giriş yap veya hesap oluştur.</p>
         <form onSubmit={submit}>
           {mode === 'signup' && <label>Ad soyad<input value={fullName} onChange={(event) => setFullName(event.target.value)} required autoComplete="name" placeholder="Ad Soyad" /></label>}
@@ -1140,7 +1140,7 @@ function PricingModal({ currentPlan, onClose, onSelect }) {
   return (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose() }}>
       <div className="pricing-modal">
-        <div className="auth-modal-heading"><div><span>PDF MANIAC PLANS</span><h2>İhtiyacına uygun planı seç</h2></div><button className="icon-button light" onClick={onClose}><X size={17} /></button></div>
+        <div className="auth-modal-heading"><div><span>UPDATEMYPDF PLANS</span><h2>İhtiyacına uygun planı seç</h2></div><button className="icon-button light" onClick={onClose}><X size={17} /></button></div>
         <p className="auth-description">Planlar AI kullanım kredisi ve cloud kapasitesine göre hazırlanmıştır. Stripe ödeme bağlantısı bir sonraki adımda aktifleşecek.</p>
         <div className="pricing-grid">
           {pricingPlans.map((plan) => <article className={`pricing-card ${plan.featured ? 'featured' : ''}`} key={plan.id}>
@@ -1215,7 +1215,7 @@ function ReviewPage({ token }) {
 
   return (
     <div className="review-shell">
-      <header className="review-header"><div className="brand-lockup"><div className="brand-mark"><Sparkles size={17} strokeWidth={2.5} /></div><span className="brand-name">pdf<span>maniac</span></span></div><span className="review-secure"><Check size={13} /> Güvenli PDF workflow</span></header>
+      <header className="review-header"><div className="brand-lockup"><div className="brand-mark"><Sparkles size={17} strokeWidth={2.5} /></div><span className="brand-name">update<span>MyPDF</span></span></div><span className="review-secure"><Check size={13} /> Güvenli PDF workflow</span></header>
       {loading ? <div className="review-state"><LoaderCircle className="spin" size={25} /><p>PDF hazırlanıyor...</p></div> : loadError ? <div className="review-state review-error"><X size={25} /><h1>Bağlantı açılamadı</h1><p>{loadError}</p></div> : request && <main className="review-layout"><section className="review-viewer"><div className="review-viewer-heading"><FileText size={16} /><strong>{request.documentName}</strong></div><iframe title="İmzalanacak PDF" src={`${request.signedUrl}#toolbar=0&navpanes=0`} /></section><section className="review-card"><div className="review-card-icon"><PenLine size={19} /></div><span className="review-eyebrow">{request.workflowType === 'review' ? 'PDF inceleme isteği' : 'PDF imza isteği'}</span><h1>{request.workflowType === 'review' ? 'Belgeyi incele ve onayla' : 'Belgeyi imzala'}</h1>{request.recipientName && <p className="review-greeting">Merhaba {request.recipientName},</p>}{request.message && <p className="review-message">{request.message}</p>}<p className="review-expiry">Bu bağlantı {new Date(request.expiresAt).toLocaleString()} tarihine kadar geçerli.</p>{done ? <div className="review-complete"><Check size={20} /><strong>İşlem tamamlandı</strong><p>{notifiedEmails.length >= 2 ? 'İmzalı PDF, belge sahibine ve imzalayan kişiye e-posta ile gönderildi.' : notifiedEmails.length === 1 ? 'İmza kaydedildi ve imzalı PDF e-posta ile gönderildi.' : 'Yanıtın kaydedildi. E-posta gönderimi daha sonra tekrar denenecek.'}</p></div> : <form className="review-form" onSubmit={submitSignature}><label>{request.workflowType === 'review' ? 'Onay adı' : 'İmza metni'}<input value={signatureText} onChange={(event) => setSignatureText(event.target.value)} required maxLength={500} placeholder="Adını ve soyadını yaz" /></label>{error && <div className="auth-error">{error}</div>}<button className="auth-submit" type="submit" disabled={busy || !signatureText.trim()}>{busy ? <LoaderCircle className="spin" size={16} /> : <Check size={16} />} {busy ? 'Kaydediliyor...' : request.workflowType === 'review' ? 'İncelemeyi tamamla' : 'PDF’i imzala'}</button></form>}<p className="review-disclaimer">Bu işlem, belge sahibinin gönderdiği PDF üzerinde elektronik onay kaydı oluşturur.</p></section></main>}
     </div>
   )

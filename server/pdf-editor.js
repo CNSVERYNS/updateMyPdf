@@ -471,8 +471,8 @@ const removeHiddenData = (pdfDocument) => {
   pdfDocument.setAuthor('')
   pdfDocument.setSubject('')
   pdfDocument.setKeywords([])
-  pdfDocument.setCreator('PDF Maniac')
-  pdfDocument.setProducer('PDF Maniac')
+  pdfDocument.setCreator('updateMyPDF')
+  pdfDocument.setProducer('updateMyPDF')
   const removedCatalogKeys = []
   for (const key of ['OpenAction', 'AA', 'Metadata', 'PieceInfo', 'Perms']) {
     const name = PDFName.of(key)

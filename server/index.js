@@ -270,7 +270,7 @@ const exportOfficeBuffer = async (pdfBuffer, format) => {
   }
   if (format === 'xlsx') {
     const workbook = new ExcelJS.Workbook()
-    workbook.creator = 'PDF Maniac'
+    workbook.creator = 'updateMyPDF'
     for (const page of pages) {
       const worksheet = workbook.addWorksheet(`Page ${page.page}`)
       worksheet.columns = [{ header: 'Page', key: 'page', width: 10 }, { header: 'Text', key: 'text', width: 120 }]
@@ -283,7 +283,7 @@ const exportOfficeBuffer = async (pdfBuffer, format) => {
   if (format === 'pptx') {
     const presentation = new PptxGenJS()
     presentation.layout = 'LAYOUT_WIDE'
-    presentation.author = 'PDF Maniac'
+    presentation.author = 'updateMyPDF'
     for (const page of pages) {
       const slide = presentation.addSlide()
       slide.addText(`PDF Page ${page.page}`, { x: 0.55, y: 0.35, w: 12, h: 0.4, fontSize: 22, bold: true, color: '182238' })
@@ -296,8 +296,8 @@ const exportOfficeBuffer = async (pdfBuffer, format) => {
 
 const createPortfolioBuffer = async (files) => {
   const portfolio = await PDFDocument.create()
-  portfolio.setTitle('PDF Maniac Portfolio')
-  portfolio.setAuthor('PDF Maniac')
+  portfolio.setTitle('updateMyPDF Portfolio')
+  portfolio.setAuthor('updateMyPDF')
   const font = await portfolio.embedFont(StandardFonts.Helvetica)
   const page = portfolio.addPage([612, 792])
   page.drawText('PDF Portfolio', { x: 48, y: 720, size: 28, font, color: rgb(0.08, 0.13, 0.25) })
@@ -456,7 +456,7 @@ const capabilityGuidance = getCapabilitySummary().capabilities
   .map((capability) => `${capability.id}: ${capability.status}`)
   .join(', ')
 
-const systemInstructions = `You are the command planner for PDF Maniac, an AI PDF editor.
+const systemInstructions = `You are the command planner for updateMyPDF, an AI PDF editor.
 Understand the user's request in Turkish or English and return ONLY the requested JSON schema.
 Do not claim that a PDF was edited. You are creating a safe, reviewable edit plan.
 Use this capability registry as the source of truth: ${capabilityGuidance}
@@ -798,7 +798,7 @@ app.post('/api/signatures/:token/sign', async (request, response) => {
           to: recipient,
           subject: `Signed PDF: ${data.document_name}`,
           replyTo: process.env.EMAIL_FROM,
-          text: `${data.document_name} was signed by ${data.recipient_email}.${signedCopyUrl ? ` Download link (valid for 7 days): ${signedCopyUrl}` : ''}${canAttach ? ' The signed PDF is attached.' : ' The PDF is available from your PDF Maniac cloud storage.'}`,
+          text: `${data.document_name} was signed by ${data.recipient_email}.${signedCopyUrl ? ` Download link (valid for 7 days): ${signedCopyUrl}` : ''}${canAttach ? ' The signed PDF is attached.' : ' The PDF is available from your updateMyPDF cloud storage.'}`,
           html: `<div style="font-family:Arial,sans-serif;line-height:1.6;color:#182238"><p><strong>${escapeHtml(data.document_name)}</strong> was signed by ${escapeHtml(data.recipient_email)}.</p>${signedCopyUrl ? `<p><a href="${escapeHtml(signedCopyUrl)}">Download the signed PDF</a> (link valid for 7 days).</p>` : ''}${canAttach ? '<p>The signed PDF is also attached to this email.</p>' : ''}</div>`,
           attachments,
         })
@@ -1009,7 +1009,7 @@ app.post('/api/pdf/create', async (request, response) => {
   if (!text) return response.status(400).json({ error: 'PDF oluşturmak için metin gerekli.' })
   try {
     const output = await PDFDocument.create()
-    output.setTitle(String(request.body?.title || 'PDF Maniac document'))
+    output.setTitle(String(request.body?.title || 'updateMyPDF document'))
     const font = await output.embedFont(StandardFonts.Helvetica)
     const lines = text.split(/\r?\n/)
     let page = output.addPage([612, 792])
@@ -1251,5 +1251,5 @@ app.use((error, _request, response, _next) => {
 })
 
 app.listen(port, () => {
-  console.log(`PDF Maniac API listening on http://localhost:${port}`)
+  console.log(`updateMyPDF API listening on http://localhost:${port}`)
 })
