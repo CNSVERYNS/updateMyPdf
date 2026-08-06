@@ -796,7 +796,9 @@ const getClient = () => {
   if (!process.env.OPENAI_API_KEY) {
     throw new Error('OPENAI_API_KEY is missing. Add it to the local .env file.')
   }
-  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY })
+  const configuredTimeout = Number(process.env.OPENAI_TIMEOUT_MS || 180000)
+  const timeout = Math.min(Math.max(Number.isFinite(configuredTimeout) ? configuredTimeout : 180000, 30000), 300000)
+  return new OpenAI({ apiKey: process.env.OPENAI_API_KEY, timeout, maxRetries: 0 })
 }
 
 const editPlanSchema = {
@@ -1859,13 +1861,31 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
 
   try {
     const client = getClient()
-    const base64Pdf = sourceFile.buffer.toString('base64')
-    const content = [{
-      type: 'input_file',
-      filename: sourceFile.originalname || 'document.pdf',
-      file_data: `data:application/pdf;base64,${base64Pdf}`,
-      detail: 'low',
-    }]
+    const translationMode = /(?:çevir|çeviri|translate|translation|traduc|traduce|ingilizce|english|ispanyolca|spanish|español)/i.test(prompt)
+    let extractedTranslationText = ''
+    if (translationMode) {
+      const extractedPages = await extractTextPages(sourceFile.buffer)
+      extractedTranslationText = extractedPages
+        .filter((page) => page.text)
+        .map((page) => `[Page ${page.page}]\n${page.text}`)
+        .join('\n\n')
+        .slice(0, 120000)
+    }
+    const content = []
+    if (translationMode && extractedTranslationText) {
+      content.push({
+        type: 'input_text',
+        text: `The PDF text was extracted locally to make this translation fast and exact. Preserve the page numbers and create replacement actions for the identifiable source text blocks.\n\n${extractedTranslationText}`,
+      })
+    } else {
+      const base64Pdf = sourceFile.buffer.toString('base64')
+      content.push({
+        type: 'input_file',
+        filename: sourceFile.originalname || 'document.pdf',
+        file_data: `data:application/pdf;base64,${base64Pdf}`,
+        detail: 'low',
+      })
+    }
     if (imageFile) content.push({
       type: 'input_image',
       image_url: `data:${imageFile.mimetype};base64,${imageFile.buffer.toString('base64')}`,
@@ -1886,7 +1906,9 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
           schema: editPlanSchema,
         },
       },
-    })
+      max_output_tokens: translationMode ? 16000 : 8000,
+      reasoning: { effort: 'low' },
+    }, { timeout: 180000 })
 
     if (!result.output_text?.trim()) throw new Error('The model returned an empty response.')
     const plan = JSON.parse(result.output_text)
@@ -1959,14 +1981,17 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
     })
   } catch (error) {
     console.error('[ai-command]', error?.message || error)
-    const status = error?.status === 401 ? 401 : error?.status === 402 ? 402 : 500
+    const timedOut = error?.name === 'APIConnectionTimeoutError' || error?.name === 'AbortError' || error?.code === 'ETIMEDOUT'
+    const status = error?.status === 401 ? 401 : error?.status === 402 ? 402 : timedOut ? 504 : 500
     const developmentDetails = process.env.NODE_ENV === 'production' ? '' : ` (${error?.message || 'unknown error'})`
     return response.status(status).json({
       error: status === 401
         ? 'OpenAI API anahtarı geçersiz veya yetkisiz.'
         : status === 402
           ? error.message
-        : `AI komutu işlenirken bir hata oluştu${developmentDetails}.`,
+          : timedOut
+            ? 'AI işlemi 3 dakika içinde tamamlanamadı. Çeviriyi daha küçük sayfa aralıklarıyla denemelisin.'
+            : `AI komutu işlenirken bir hata oluştu${developmentDetails}.`,
     })
   }
 })
