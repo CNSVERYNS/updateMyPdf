@@ -145,7 +145,8 @@ const validatePdfFile = async (sourceFile) => {
     return pdfDocument.numPages
   } finally {
     if (typeof pdfDocument.cleanup === 'function') await pdfDocument.cleanup()
-    await pdfDocument.destroy()
+    if (typeof pdfDocument.destroy === 'function') await pdfDocument.destroy()
+    if (typeof loadingTask.destroy === 'function') await loadingTask.destroy()
   }
 }
 
@@ -1276,8 +1277,8 @@ function PdfPreview({ src, page, onPageCount }) {
     setError('')
     setPdfDocument(null)
     renderTaskRef.current?.cancel()
-    loadingTaskRef.current?.destroy()
-    pdfDocumentRef.current?.destroy()
+    loadingTaskRef.current?.destroy?.()
+    pdfDocumentRef.current?.destroy?.()
     renderTaskRef.current = null
     loadingTaskRef.current = null
     pdfDocumentRef.current = null
@@ -1289,7 +1290,7 @@ function PdfPreview({ src, page, onPageCount }) {
         loadingTaskRef.current = loadingTask
         const document = await loadingTask.promise
         if (cancelled) {
-          document.destroy()
+          if (typeof document.destroy === 'function') await document.destroy()
           return
         }
         pdfDocumentRef.current = document
@@ -1306,8 +1307,8 @@ function PdfPreview({ src, page, onPageCount }) {
     return () => {
       cancelled = true
       renderTaskRef.current?.cancel()
-      loadingTaskRef.current?.destroy()
-      pdfDocumentRef.current?.destroy()
+      loadingTaskRef.current?.destroy?.()
+      pdfDocumentRef.current?.destroy?.()
       renderTaskRef.current = null
       loadingTaskRef.current = null
       pdfDocumentRef.current = null
