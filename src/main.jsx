@@ -105,6 +105,14 @@ const downloadBase64File = (base64, filename, mimeType) => {
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
 }
 
+const exportMimeTypes = {
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  html: 'text/html',
+  png: 'image/png',
+}
+
 function App() {
   const [file, setFile] = useState(null)
   const [originalFile, setOriginalFile] = useState(null)
@@ -605,20 +613,28 @@ function App() {
       }
       if (imageFile) setImageFile(null)
       const officeExports = data.officeExports || []
-      officeExports.forEach((officeFile) => downloadBase64File(officeFile.data, officeFile.fileName, officeFile.format === 'docx' ? 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' : officeFile.format === 'xlsx' ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' : 'application/vnd.openxmlformats-officedocument.presentationml.presentation'))
+      officeExports.forEach((officeFile) => downloadBase64File(officeFile.data, officeFile.fileName, exportMimeTypes[officeFile.format] || 'application/octet-stream'))
+      const imageExports = data.imageExports || []
+      imageExports.forEach((imageFileExport) => downloadBase64File(imageFileExport.data, imageFileExport.fileName, exportMimeTypes[imageFileExport.format] || 'image/png'))
       if (data.audioOverview?.data) downloadBase64File(data.audioOverview.data, data.audioOverview.fileName || 'audio-overview.mp3', 'audio/mpeg')
       const appliedCount = data.appliedActions?.filter((action) => action.applied && !['detect_form_fields', 'export_form_data', 'measure', 'accessibility_check', 'extract_data', 'extract_table', 'document_citations'].includes(action.type)).length || 0
       const analysisNotice = data.analysis?.length
         ? `\n\n${data.analysis.map((item) => item.fields ? `Form alanları: ${item.fields.map((field) => `${field.name}=${field.value ?? ''}`).join(', ') || 'bulunamadı'}` : item.measurements ? `Ölçüm: ${item.measurements.map((measurement) => `S${measurement.page} ${measurement.width}×${measurement.height}pt`).join(', ')}` : item.report ? `Erişilebilirlik: ${item.report.textPages}/${item.report.pageCount} sayfada metin var; başlık ${item.report.titlePresent ? 'mevcut' : 'eksik'}.` : item.data ? `Çıkarılan veri: ${JSON.stringify(item.data.data).slice(0, 3000)}` : item.table ? `Tablo: ${item.table.rowCount} satır\n${item.table.rows.slice(0, 30).map((row) => `S${row.page}: ${row.cells.join(' | ')}`).join('\n')}` : item.citations ? `Kaynak sayfaları:\n${item.citations.citations.map((citation) => `Sayfa ${citation.page}: ${citation.quote}`).join('\n')}` : '').filter(Boolean).join('\n')}`
         : ''
       const officeNotice = officeExports.length ? `\nOffice çıktısı indirildi: ${officeExports.map((officeFile) => officeFile.fileName).join(', ')}` : ''
+      const imageNotice = imageExports.length ? `\nGörsel çıktıları indirildi: ${imageExports.map((imageFileExport) => imageFileExport.fileName).join(', ')}` : ''
       const audioNotice = data.audioOverview?.data ? '\nAudio overview indirildi.' : ''
-      const warningText = `${data.warnings?.length ? ` ${data.warnings.join(' ')}` : ''}${analysisNotice}${officeNotice}${audioNotice}`
+      const warningText = `${data.warnings?.length ? ` ${data.warnings.join(' ')}` : ''}${analysisNotice}${officeNotice}${imageNotice}${audioNotice}`
       const ocrText = data.ocrPages?.length
         ? data.ocrPages.map((page) => `Sayfa ${page.page}: ${page.text || '(metin bulunamadı)'}`).join('\n')
         : ''
+      const extractedText = data.extractedText?.length
+        ? data.extractedText.map((page) => `Sayfa ${page.page}: ${page.text || '(metin bulunamadı)'}`).join('\n')
+        : ''
       const responseText = ocrText
         ? `Yerel OCR tamamlandı:\n\n${ocrText.slice(0, 6000)}`
+        : extractedText
+        ? `PDF metni çıkarıldı:\n\n${extractedText.slice(0, 6000)}${extractedText.length > 6000 ? '\n\n…devamı export edilen dosyada.' : ''}`
         : appliedCount
         ? `Düzenlemeyi PDF'e uyguladım. ${appliedCount} değişiklik preview'a yansıtıldı.${warningText}`
         : `${data.assistantMessage}${warningText}`

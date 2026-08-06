@@ -296,6 +296,12 @@ const exportOfficeBuffer = async (pdfBuffer, format) => {
   throw new Error(`Unsupported Office format: ${format}`)
 }
 
+const exportHtmlBuffer = async (pdfBuffer, documentName = 'document.pdf') => {
+  const pages = await extractTextPages(pdfBuffer)
+  const sections = pages.map((page) => `<section data-page="${page.page}"><h2>Page ${page.page}</h2><p>${escapeHtml(page.text || '').replaceAll('\n', '<br />')}</p></section>`).join('\n')
+  return Buffer.from(`<!doctype html><html lang="en"><head><meta charset="utf-8" /><meta name="viewport" content="width=device-width,initial-scale=1" /><title>${escapeHtml(documentName)}</title><style>body{font-family:Arial,sans-serif;max-width:900px;margin:40px auto;padding:0 20px;color:#182238}section{margin:0 0 32px;padding:24px;border:1px solid #d9deea;border-radius:8px}h2{font-size:14px;color:#687590}p{line-height:1.6;white-space:normal}</style></head><body>${sections}</body></html>`)
+}
+
 const createPortfolioBuffer = async (files) => {
   const portfolio = await PDFDocument.create()
   portfolio.setTitle('updateMyPDF Portfolio')
@@ -411,7 +417,7 @@ const editPlanSchema = {
         properties: {
           type: {
             type: 'string',
-            enum: ['highlight', 'underline', 'style_text', 'strikethrough', 'squiggly', 'redact', 'ocr_scan', 'set_title', 'edit_metadata', 'remove_hidden_data', 'delete_page', 'rotate_page', 'reorder_pages', 'duplicate_page', 'add_text', 'add_image', 'resize_image', 'replace_image', 'set_alt_text', 'add_link', 'delete_text', 'replace_text', 'rewrite_text', 'insert_blank_page', 'crop_page', 'resize_page', 'extract_pages', 'flatten_form', 'flatten_pdf', 'add_text_field', 'add_checkbox', 'add_dropdown', 'add_radio', 'add_signature_field', 'fill_field', 'detect_form_fields', 'export_form_data', 'measure', 'accessibility_check', 'tag_pdf', 'reading_order', 'watermark', 'header_footer', 'bates_numbering', 'sticky_note', 'comment', 'freehand', 'shape', 'stamp', 'add_signature', 'fill_and_sign', 'optimize_pdf', 'compress_pdf', 'password_protect', 'remove_password', 'set_permissions', 'pdfa_convert', 'pdfx_preflight', 'print_production', 'portfolio', 'audio_overview', 'export_word', 'export_excel', 'export_powerpoint', 'extract_data', 'extract_table', 'document_citations', 'summarize', 'translate', 'none'],
+            enum: ['highlight', 'underline', 'style_text', 'strikethrough', 'squiggly', 'redact', 'ocr_scan', 'set_title', 'edit_metadata', 'remove_hidden_data', 'delete_page', 'rotate_page', 'reorder_pages', 'duplicate_page', 'add_text', 'add_image', 'resize_image', 'replace_image', 'set_alt_text', 'add_link', 'delete_text', 'replace_text', 'rewrite_text', 'insert_blank_page', 'insert_page', 'crop_page', 'resize_page', 'extract_pages', 'flatten_form', 'flatten_pdf', 'add_text_field', 'add_checkbox', 'add_dropdown', 'add_radio', 'add_signature_field', 'fill_field', 'fill_form', 'detect_form_fields', 'export_form_data', 'measure', 'accessibility_check', 'tag_pdf', 'reading_order', 'watermark', 'header_footer', 'bates_numbering', 'sticky_note', 'comment', 'freehand', 'shape', 'stamp', 'add_signature', 'fill_and_sign', 'optimize_pdf', 'compress_pdf', 'password_protect', 'remove_password', 'set_permissions', 'pdfa_convert', 'pdfx_preflight', 'print_production', 'portfolio', 'audio_overview', 'export_word', 'export_excel', 'export_powerpoint', 'export_html', 'export_image', 'extract_text', 'extract_data', 'extract_table', 'document_citations', 'summarize', 'translate', 'none'],
           },
           page: { anyOf: [{ type: 'integer' }, { type: 'null' }] },
           text: { anyOf: [{ type: 'string' }, { type: 'null' }] },
@@ -445,7 +451,7 @@ const editPlanSchema = {
           script: { anyOf: [{ type: 'string' }, { type: 'null' }] },
           password: { anyOf: [{ type: 'string' }, { type: 'null' }] },
           permissions: { anyOf: [{ type: 'array', items: { type: 'string', enum: ['print', 'modify', 'copy', 'annotate', 'form', 'assemble'] } }, { type: 'null' }] },
-          format: { anyOf: [{ type: 'string', enum: ['docx', 'xlsx', 'pptx'] }, { type: 'null' }] },
+          format: { anyOf: [{ type: 'string', enum: ['docx', 'xlsx', 'pptx', 'html', 'png'] }, { type: 'null' }] },
         },
         required: ['type', 'page', 'text', 'replacement', 'url', 'angle', 'title', 'author', 'subject', 'keywords', 'color', 'fontFamily', 'fontWeight', 'fontStyle', 'align', 'opacity', 'x', 'y', 'size', 'targetPage', 'pages', 'width', 'height', 'imageIndex', 'fieldName', 'fieldType', 'value', 'options', 'language', 'position', 'script', 'password', 'permissions', 'format'],
       },
@@ -471,7 +477,7 @@ For highlight, include the exact text in text and use yellow as color unless ano
 For strikethrough or squiggly, include the exact text in text.
 For delete_text, include the exact text to remove in text.
 For add_text, include the new text in text and page/x/y when the user gives a location; otherwise use page 1 and null coordinates.
-For insert_blank_page, use page as the insertion position and width/height when provided.
+For insert_blank_page or insert_page, use page as the insertion position and width/height when provided.
 For crop_page, use page, x, y, width, and height in PDF points.
 For resize_page, use page when one page is named, otherwise apply to all pages; use width and height in PDF points.
 For extract_pages, put the requested 1-based page numbers in pages.
@@ -480,7 +486,7 @@ For duplicate_page, use page for the source and targetPage for the insertion pos
 For add_text_field, add_checkbox, or add_dropdown, include fieldName, page, x, y, width, height, and options when needed.
 For add_radio, include fieldName, page, x, y, width, height, options, and value when needed.
 For add_signature_field, include fieldName, page, x, y, width, and height; this creates an interactive unsigned signature field, not a certificate signature.
-For fill_field, include fieldName, fieldType, and value.
+For fill_field or fill_form, include fieldName, fieldType, and value.
 For detect_form_fields or export_form_data, use page null and do not invent field values.
 For measure, use page null unless one page is named.
 For accessibility_check, use page null and return the document report without claiming that problems were fixed.
@@ -518,6 +524,8 @@ For portfolio, wrap the current edited PDF as a PDF portfolio attachment when th
 For audio_overview, create a concise Turkish spoken overview from the document text; do not claim that audio was made until the server returns the audio output.
 For reading_order, use pages when a page order is explicitly requested and explain that basic Tabs/reading-order metadata was applied, not a full semantic structure tree.
 For export_word, export_excel, or export_powerpoint, set format to docx, xlsx, or pptx. These exports preserve extracted text and page grouping, not perfect original PDF layout.
+For export_html, export the extracted text as a self-contained HTML document and set format to html. For export_image, set format to png and use page when a specific page is requested; otherwise export the rendered pages. These exports are downloaded separately and do not replace the PDF.
+For extract_text, return the document text grouped by page without inventing or changing content.
 For extract_data, use text as the requested data type or field description and return the extracted result without inventing values.
 For extract_table, use text for an optional table description and return rows/cells found in the PDF without inventing values.
 For document_citations, use text as the user's question or topic and return page-numbered evidence snippets; cite pages in assistantMessage when answering document questions.
@@ -916,6 +924,26 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
       const sourceBaseName = safeFileName((sourceFile.originalname || 'document.pdf').replace(/\.pdf$/i, ''))
       return { type: action.type, format, fileName: `${sourceBaseName}.${format}`, data: officeBytes.toString('base64') }
     }))
+    const htmlActions = plan.actions.filter((action) => action.type === 'export_html')
+    const htmlExports = await Promise.all(htmlActions.map(async (action) => {
+      const htmlBytes = await exportHtmlBuffer(finalPdfBytes, sourceFile.originalname || 'document.pdf')
+      const sourceBaseName = safeFileName((sourceFile.originalname || 'document.pdf').replace(/\.pdf$/i, ''))
+      return { type: action.type, format: 'html', fileName: `${sourceBaseName}.html`, data: htmlBytes.toString('base64') }
+    }))
+    const imageActions = plan.actions.filter((action) => action.type === 'export_image')
+    const imageExports = []
+    if (imageActions.length) {
+      const renderedPages = await renderPdfPages(finalPdfBytes, 2)
+      const requestedPages = imageActions.flatMap((action) => Number.isInteger(action.page) && action.page > 0 ? [action.page] : renderedPages.map((page) => page.page))
+      const uniquePages = [...new Set(requestedPages)].filter((page) => page > 0 && page <= renderedPages.length).slice(0, 20)
+      const sourceBaseName = safeFileName((sourceFile.originalname || 'document.pdf').replace(/\.pdf$/i, ''))
+      uniquePages.forEach((pageNumber) => {
+        const renderedPage = renderedPages[pageNumber - 1]
+        imageExports.push({ type: 'export_image', format: 'png', page: pageNumber, fileName: `${sourceBaseName}-page-${pageNumber}.png`, data: renderedPage.png.toString('base64') })
+      })
+    }
+    const extractTextAction = plan.actions.find((action) => action.type === 'extract_text')
+    const extractedText = extractTextAction ? await extractTextPages(finalPdfBytes) : null
     const audioAction = plan.actions.find((action) => action.type === 'audio_overview')
     let audioOverview = null
     if (audioAction) {
@@ -934,7 +962,9 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
       appliedActions,
       warnings,
       analysis: appliedActions.filter((action) => action.fields || action.measurements || action.report || action.data || action.table || action.citations),
-      officeExports,
+      officeExports: [...officeExports, ...htmlExports],
+      imageExports,
+      extractedText,
       audioOverview,
       ocrPages,
       model: process.env.OPENAI_MODEL || 'gpt-5.6',

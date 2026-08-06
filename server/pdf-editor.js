@@ -612,7 +612,7 @@ const documentCitations = (pages, query = '') => {
 }
 
 const applyPageAction = (pdfDocument, action) => {
-  if (action.type === 'insert_blank_page') {
+  if (action.type === 'insert_blank_page' || action.type === 'insert_page') {
     const insertionIndex = Math.min(Math.max((action.page || pdfDocument.getPageCount() + 1) - 1, 0), pdfDocument.getPageCount())
     pdfDocument.insertPage(insertionIndex, [action.width || 612, action.height || 792])
     return { type: action.type, page: insertionIndex + 1, applied: true }
@@ -707,7 +707,7 @@ const applyFormAction = (pdfDocument, action) => {
     return { type: action.type, fieldName, options, applied: true }
   }
 
-  if (action.type === 'fill_field') {
+  if (action.type === 'fill_field' || action.type === 'fill_form') {
     const value = action.value === null || action.value === undefined ? '' : String(action.value)
     if (action.fieldType === 'checkbox') {
       const field = form.getCheckBox(fieldName)
@@ -857,14 +857,14 @@ export async function applyEditPlan(pdfBuffer, actions = [], assets = {}) {
     if (!count) warnings.push(`Link eklenecek alan bulunamadı: ${action.text || action.url}`)
   }
 
-  for (const action of actions.filter((item) => ['insert_blank_page', 'crop_page', 'resize_page', 'extract_pages'].includes(item.type))) {
+  for (const action of actions.filter((item) => ['insert_blank_page', 'insert_page', 'crop_page', 'resize_page', 'extract_pages'].includes(item.type))) {
     const result = applyPageAction(pdfDocument, action)
     if (!result) continue
     appliedActions.push(result)
     if (!result.applied) warnings.push(`Sayfa işlemi uygulanamadı: ${action.type}`)
   }
 
-  for (const action of actions.filter((item) => ['add_text_field', 'add_checkbox', 'add_dropdown', 'add_radio', 'add_signature_field', 'fill_field', 'flatten_form', 'flatten_pdf'].includes(item.type))) {
+  for (const action of actions.filter((item) => ['add_text_field', 'add_checkbox', 'add_dropdown', 'add_radio', 'add_signature_field', 'fill_field', 'fill_form', 'flatten_form', 'flatten_pdf'].includes(item.type))) {
     try {
       const result = applyFormAction(pdfDocument, action)
       if (!result) continue
