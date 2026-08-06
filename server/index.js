@@ -6,6 +6,7 @@ import cors from 'cors'
 import express from 'express'
 import multer from 'multer'
 import OpenAI from 'openai'
+import fontkit from '@pdf-lib/fontkit'
 import { Document, HeadingLevel, PageBreak, Paragraph, Packer } from 'docx'
 import ExcelJS from 'exceljs'
 import PptxGenJS from 'pptxgenjs'
@@ -356,7 +357,7 @@ const pdfSafeText = (value) => String(value || '')
   .replace(/[‘’]/g, "'")
   .replace(/…/g, '...')
   .replace(/•/g, '-')
-  .replace(/[^\x00-\xFF]/g, '')
+  .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '')
 
 const wrapPdfText = (text, font, size, maxWidth) => {
   const words = pdfSafeText(text).split(/\s+/).filter(Boolean)
@@ -365,57 +366,203 @@ const wrapPdfText = (text, font, size, maxWidth) => {
   let line = ''
   for (const word of words) {
     const candidate = line ? `${line} ${word}` : word
-    if (font.widthOfTextAtSize(candidate, size) <= maxWidth || !line) line = candidate
+    if (font.widthOfTextAtSize(candidate, size) <= maxWidth) line = candidate
     else {
-      lines.push(line)
-      line = word
+      if (line) {
+        lines.push(line)
+        line = word
+      } else {
+        let chunk = ''
+        for (const character of word) {
+          const next = `${chunk}${character}`
+          if (font.widthOfTextAtSize(next, size) > maxWidth && chunk) {
+            lines.push(chunk)
+            chunk = character
+          } else chunk = next
+        }
+        line = chunk
+      }
     }
   }
   if (line) lines.push(line)
   return lines
 }
 
-const createTextPdfBuffer = async (title, content) => {
-  const document = await PDFDocument.create()
-  document.setTitle(pdfSafeText(title || 'Generated document'))
-  document.setAuthor('updateMyPDF AI')
-  document.setSubject('AI-generated document draft')
-  const regular = await document.embedFont(StandardFonts.Helvetica)
-  const bold = await document.embedFont(StandardFonts.HelveticaBold)
-  const pageSize = [612, 792]
-  const margin = 54
-  const lineHeight = 15
-  let page = document.addPage(pageSize)
-  let y = page.getHeight() - margin
-  const pages = [page]
-  const drawLine = (line, font, size, gap = 0) => {
-    if (y < margin + lineHeight * 2) {
-      page = document.addPage(pageSize)
-      pages.push(page)
-      y = page.getHeight() - margin
-    }
-    page.drawText(pdfSafeText(line), { x: margin, y, size, font, color: rgb(0.1, 0.12, 0.16) })
-    y -= lineHeight + gap
+const pdfFontPath = (kind) => {
+  const configured = process.env[`PDFMANIAC_${kind.toUpperCase()}_FONT_PATH`]
+  const candidates = {
+    regular: [configured, '/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf', 'C:\\Windows\\Fonts\\segoeui.ttf', 'C:\\Windows\\Fonts\\arial.ttf'],
+    bold: [configured, '/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf', 'C:\\Windows\\Fonts\\segoeuib.ttf', 'C:\\Windows\\Fonts\\arialbd.ttf'],
+    italic: [configured, '/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf', 'C:\\Windows\\Fonts\\segoeuii.ttf', 'C:\\Windows\\Fonts\\ariali.ttf'],
   }
-  drawLine(title || 'Generated document', bold, 20, 10)
+  return (candidates[kind] || []).filter(Boolean).find((candidate) => existsSync(candidate)) || null
+}
+
+const embedPdfFont = async (document, kind, fallback) => {
+  const filePath = pdfFontPath(kind)
+  return filePath ? document.embedFont(readFileSync(filePath), { subset: true }) : document.embedFont(fallback)
+}
+
+const normalizeBlockHeading = (value) => pdfSafeText(value).replace(/^#{1,6}\s*/, '').replace(/\*\*(.*?)\*\*/g, '$1').trim()
+
+const parseDocumentBlocks = (content, title) => {
+  const blocks = []
+  let paragraph = []
+  const flushParagraph = () => {
+    if (paragraph.length) {
+      blocks.push({ type: 'paragraph', text: paragraph.join(' ').replace(/\s+/g, ' ').trim() })
+      paragraph = []
+    }
+  }
   for (const rawLine of String(content || '').replaceAll('\r', '').split('\n')) {
-    const trimmed = rawLine.trim()
-    if (!trimmed) {
-      y -= 7
+    const line = rawLine.trim()
+    if (!line) {
+      flushParagraph()
       continue
     }
-    const heading = trimmed.replace(/^#{1,6}\s*/, '')
-    const isHeading = heading !== trimmed || /^\d+[.)]\s/.test(trimmed)
-    const cleanLine = trimmed.replace(/^#{1,6}\s*/, '').replace(/\*\*(.*?)\*\*/g, '$1')
-    const font = isHeading ? bold : regular
-    const size = isHeading ? 13 : 10.5
-    const gap = isHeading ? 3 : 0
-    wrapPdfText(cleanLine, font, size, page.getWidth() - margin * 2).forEach((line) => drawLine(line, font, size, gap))
+    const markdownHeading = /^(#{1,6})\s+(.+)$/.exec(line)
+    const numberedHeading = /^(\d+(?:\.\d+)*[.)])\s+(.{1,160})$/.exec(line)
+    const uppercaseHeading = /^[A-ZÀ-ÖØ-Þ][A-ZÀ-ÖØ-Þ\s&/,:-]{3,100}$/.test(line) && line.length < 110
+    if (markdownHeading || numberedHeading || uppercaseHeading) {
+      flushParagraph()
+      const headingText = markdownHeading ? markdownHeading[2] : numberedHeading ? line : line
+      const level = markdownHeading ? Math.min(markdownHeading[1].length, 3) : 2
+      blocks.push({ type: 'heading', level, text: normalizeBlockHeading(headingText) })
+      continue
+    }
+    const bullet = /^[-*•]\s+(.+)$/.exec(line)
+    if (bullet) {
+      flushParagraph()
+      blocks.push({ type: 'bullet', text: bullet[1].replace(/\*\*(.*?)\*\*/g, '$1').trim() })
+      continue
+    }
+    paragraph.push(line.replace(/\*\*(.*?)\*\*/g, '$1').trim())
   }
-  pages.forEach((currentPage, index) => {
-    currentPage.drawLine({ start: { x: margin, y: 36 }, end: { x: currentPage.getWidth() - margin, y: 36 }, thickness: 0.5, color: rgb(0.82, 0.83, 0.85) })
-    currentPage.drawText(`updateMyPDF · Draft · ${index + 1}/${pages.length}`, { x: margin, y: 23, size: 8, font: regular, color: rgb(0.42, 0.45, 0.5) })
-  })
+  flushParagraph()
+  const cleanTitle = normalizeBlockHeading(title || '')
+  if (blocks[0]?.type === 'heading' && cleanTitle && blocks[0].text.toLowerCase() === cleanTitle.toLowerCase()) blocks.shift()
+  return blocks
+}
+
+const signatureHeading = (text) => /^(signatures?|signature blocks?|imzalar?|imza bölümü|signing)$/i.test(text.trim())
+
+const createTextPdfBuffer = async (title, content, metadata = {}) => {
+  const document = await PDFDocument.create()
+  document.registerFontkit(fontkit)
+  document.setTitle(pdfSafeText(title || 'Generated document'))
+  document.setAuthor('updateMyPDF AI')
+  document.setSubject('AI-generated professional document draft')
+  const regular = await embedPdfFont(document, 'regular', StandardFonts.Helvetica)
+  const bold = await embedPdfFont(document, 'bold', StandardFonts.HelveticaBold)
+  const italic = await embedPdfFont(document, 'italic', StandardFonts.HelveticaOblique)
+  const pageSize = [612, 792]
+  const margin = 60
+  const contentWidth = pageSize[0] - margin * 2
+  const colors = {
+    ink: rgb(0.12, 0.15, 0.2),
+    muted: rgb(0.38, 0.42, 0.48),
+    accent: rgb(0.87, 0.25, 0.16),
+    rule: rgb(0.86, 0.87, 0.89),
+    panel: rgb(0.97, 0.97, 0.96),
+  }
+  let page
+  let y
+  const pages = []
+  const headerFooter = (currentPage, index) => {
+    if (index > 0) {
+      currentPage.drawText(pdfSafeText(title || 'Document draft'), { x: margin, y: 754, size: 8, font: bold, color: colors.muted })
+      currentPage.drawLine({ start: { x: margin, y: 744 }, end: { x: pageSize[0] - margin, y: 744 }, thickness: 0.7, color: colors.rule })
+    }
+    currentPage.drawLine({ start: { x: margin, y: 38 }, end: { x: pageSize[0] - margin, y: 38 }, thickness: 0.7, color: colors.rule })
+    currentPage.drawText(`updateMyPDF · DRAFT · ${index + 1}/${pages.length}`, { x: margin, y: 24, size: 8, font: regular, color: colors.muted })
+    currentPage.drawText('Prepared for review', { x: pageSize[0] - margin - regular.widthOfTextAtSize('Prepared for review', 8), y: 24, size: 8, font: regular, color: colors.muted })
+  }
+  const newPage = (first = false) => {
+    page = document.addPage(pageSize)
+    pages.push(page)
+    y = first ? 720 : 724
+    return page
+  }
+  const ensureSpace = (height) => {
+    if (y - height < 58) newPage(false)
+  }
+  const drawWrapped = (text, font, size, lineHeight, x, width, color = colors.ink) => {
+    const lines = wrapPdfText(text, font, size, width)
+    for (const line of lines) {
+      ensureSpace(lineHeight)
+      page.drawText(line, { x, y, size, font, color })
+      y -= lineHeight
+    }
+  }
+  const drawHeading = (text, level = 2) => {
+    const size = level === 1 ? 16 : level === 2 ? 12.5 : 11
+    const lineHeight = size + 5
+    ensureSpace(lineHeight + 24)
+    y -= level === 1 ? 12 : 9
+    page.drawRectangle({ x: margin, y: y - 3, width: 4, height: lineHeight + 3, color: colors.accent })
+    drawWrapped(text, bold, size, lineHeight, margin + 13, contentWidth - 13, colors.ink)
+    y -= 8
+  }
+  const drawParagraph = (text) => {
+    drawWrapped(text, regular, 10.5, 15, margin, contentWidth)
+    y -= 8
+  }
+  const drawBullet = (text) => {
+    ensureSpace(22)
+    page.drawCircle({ x: margin + 5, y: y + 4, size: 2.2, color: colors.accent })
+    drawWrapped(text, regular, 10.5, 15, margin + 16, contentWidth - 16)
+    y -= 4
+  }
+  const drawSignatureGrid = (labels = []) => {
+    const names = labels.length ? labels.slice(0, 4) : ['Party 1', 'Party 2']
+    const cardGap = 14
+    const cardWidth = (contentWidth - cardGap) / 2
+    for (let row = 0; row < Math.ceil(names.length / 2); row += 1) {
+      ensureSpace(118)
+      const top = y
+      names.slice(row * 2, row * 2 + 2).forEach((name, column) => {
+        const x = margin + column * (cardWidth + cardGap)
+        page.drawRectangle({ x, y: top - 104, width: cardWidth, height: 104, color: colors.panel, borderColor: colors.rule, borderWidth: 0.8 })
+        page.drawText(pdfSafeText(name), { x: x + 12, y: top - 21, size: 10.5, font: bold, color: colors.ink })
+        page.drawLine({ start: { x: x + 12, y: top - 60 }, end: { x: x + cardWidth - 12, y: top - 60 }, thickness: 0.7, color: colors.muted })
+        page.drawText('Signature', { x: x + 12, y: top - 73, size: 8, font: italic, color: colors.muted })
+        page.drawLine({ start: { x: x + 12, y: top - 88 }, end: { x: x + cardWidth - 12, y: top - 88 }, thickness: 0.7, color: colors.muted })
+        page.drawText('Date', { x: x + 12, y: top - 100, size: 8, font: italic, color: colors.muted })
+      })
+      y -= 118
+    }
+  }
+
+  newPage(true)
+  page.drawText('UPDATEMYPDF  ·  AI DOCUMENT DRAFT', { x: margin, y, size: 8.5, font: bold, color: colors.accent })
+  y -= 28
+  drawWrapped(title || 'Generated document', bold, 24, 29, margin, contentWidth, colors.ink)
+  y -= 5
+  page.drawLine({ start: { x: margin, y }, end: { x: pageSize[0] - margin, y }, thickness: 1.5, color: colors.accent })
+  y -= 20
+  const meta = [metadata.documentLanguage, metadata.jurisdiction, 'Draft for review'].filter(Boolean).join('  ·  ')
+  if (meta) {
+    page.drawText(pdfSafeText(meta), { x: margin, y, size: 8.5, font: regular, color: colors.muted })
+    y -= 25
+  }
+  const blocks = parseDocumentBlocks(content, title)
+  for (let index = 0; index < blocks.length; index += 1) {
+    const block = blocks[index]
+    if (block.type === 'heading' && signatureHeading(block.text)) {
+      drawHeading(block.text, 2)
+      const signatureLabels = []
+      let nextIndex = index + 1
+      while (nextIndex < blocks.length && blocks[nextIndex].type !== 'heading') {
+        if (signatureLabels.length < 4 && blocks[nextIndex].text) signatureLabels.push(blocks[nextIndex].text.split(':')[0].slice(0, 80))
+        nextIndex += 1
+      }
+      drawSignatureGrid(signatureLabels)
+      index = nextIndex - 1
+    } else if (block.type === 'heading') drawHeading(block.text, block.level)
+    else if (block.type === 'bullet') drawBullet(block.text)
+    else drawParagraph(block.text)
+  }
+  pages.forEach(headerFooter)
   return Buffer.from(await document.save())
 }
 
@@ -590,11 +737,12 @@ const documentAssistantSchema = {
   required: ['status', 'reply', 'documentType', 'documentTitle', 'documentLanguage', 'jurisdiction', 'questions', 'facts', 'researchNeeded', 'researchQuery', 'researchSources', 'documentContent', 'complianceNotes'],
 }
 
-const documentAssistantInstructions = `You are updateMyPDF's general-purpose document concierge: think like a capable ChatGPT assistant, then turn the completed conversation into a professional PDF. This is not a fixed list of lease, vehicle, or business templates. Support any reasonable request: contracts, policies, letters, applications, reports, invoices, proposals, forms, checklists, notices, plans, translations, and custom documents in any language.
-Use the newest user message, the compact profile, and only the recent conversation. Preserve facts already collected. Never invent material facts, names, addresses, dates, prices, legal choices, or obligations. Do not ask again for facts already in the profile. Ask no more than four high-value questions per turn; group related details into one question and give a short example. If the user is only asking for advice or explanation, answer directly with status answer and do not force document creation.
+const documentAssistantInstructions = `You are updateMyPDF's general-purpose document concierge: a natural, thoughtful ChatGPT-style assistant who understands the whole conversation, combines facts, and then turns the finished request into a professional PDF. This is not a fixed list of lease, vehicle, or business templates. Support any reasonable request: contracts, policies, letters, applications, reports, invoices, proposals, forms, checklists, notices, plans, translations, and custom documents in any language.
+Conversation style is essential: speak like a calm, capable human assistant, not like an API, legal form, database, or technical checklist. Reply in the user's language and match their tone. Start by acknowledging what you understood in one natural sentence. Explain only why a missing detail matters, then ask the smallest useful set of questions. Never expose status names, schema fields, internal reasoning, token/model details, or phrases such as "I need to identify the document type". Do not dump a generic questionnaire. When the user gives scattered facts, silently merge them into one coherent understanding and do not make them repeat themselves.
+Use the newest user message, the compact profile, and only the recent conversation. Preserve and reconcile facts already collected. Never invent material facts, names, addresses, dates, prices, legal choices, or obligations. Do not ask again for facts already in the profile. Ask no more than four high-value questions per turn; group related details into one question and give a short example. If the user is only asking for advice or explanation, answer directly with status answer and do not force document creation.
 For a document request, first identify the user's outcome, audience, document type, language, tone, jurisdiction, and required format. Ask for jurisdiction at the right level (country, state/province/region, city/municipality, district, or governing law) whenever the document has legal, tax, employment, immigration, financial, medical, safety, or regulatory consequences. If the location is unknown, ask for it instead of assuming Chicago, the United States, or any other place. Adapt the intake to the request; never expose a long generic checklist.
 Research policy: do not use web search during routine intake or for purely creative/personal documents. When the user asks for research, or when current/local rules materially affect a document, set researchNeeded true and use the web_search tool before drafting. Search only after enough facts and jurisdiction are known. Prefer primary government, regulator, court, official standards, or authoritative institutional sources; use current sources and compare sources when rules conflict. Never imply that a search result alone makes the document legally compliant. Put the most useful source URLs in researchSources and explain their role in why. If a source cannot be verified, say so and leave a review note.
-When the required facts are complete, return status draft_ready and write documentContent as a complete, polished, standalone document in the requested language. Use sensible headings, definitions, dates, payment or performance terms, responsibilities, exceptions, termination, dispute or governing-law terms only when relevant, signature blocks, and appendices when useful. Do not include markdown fences. Use placeholders only for genuinely optional facts; list every placeholder in complianceNotes. Keep the chat reply concise and mention the document is ready. For documents with legal or regulated effect, complianceNotes must say that this is a draft, not legal advice, current rules and source applicability must be checked, and a qualified local professional should review it before reliance or signature. Never claim enforceability or guaranteed compliance.`
+When the required facts are complete, return status draft_ready and write documentContent as a complete, polished, standalone document in the requested language. Harmonize the facts into natural clauses; never paste a raw fact list into the document. Use sensible headings, definitions, dates, payment or performance terms, responsibilities, exceptions, termination, dispute or governing-law terms only when relevant, signature blocks, and appendices when useful. For documents intended to be signed, always finish with a ## Signatures section; the PDF renderer will turn it into aligned signature cards. Do not include markdown fences. Use placeholders only for genuinely optional facts; list every placeholder in complianceNotes. Keep the chat reply warm and concise, for example: "Bilgileri birleştirdim; taslağı hazırladım." For documents with legal or regulated effect, complianceNotes must say that this is a draft, not legal advice, current rules and source applicability must be checked, and a qualified local professional should review it before reliance or signature. Never claim enforceability or guaranteed compliance.`
 
 const assistantModel = (likelyDraft = false) => process.env.OPENAI_ASSISTANT_MODEL || (likelyDraft ? 'gpt-5.6-terra' : 'gpt-5.6-luna')
 const assistantReasoning = () => process.env.OPENAI_ASSISTANT_REASONING || 'low'
@@ -1236,7 +1384,7 @@ app.post('/api/ai/assistant', async (request, response) => {
     let generatedFileName = null
     if (assistantResult.status === 'draft_ready' && assistantResult.documentContent?.trim()) {
       const title = assistantResult.documentTitle || 'updateMyPDF document draft'
-      const pdfBytes = await createTextPdfBuffer(title, assistantResult.documentContent)
+      const pdfBytes = await createTextPdfBuffer(title, assistantResult.documentContent, { documentLanguage: assistantResult.documentLanguage, jurisdiction: assistantResult.jurisdiction })
       generatedPdf = pdfBytes.toString('base64')
       generatedFileName = `${safeFileName(title).replace(/\.pdf$/i, '') || 'document-draft'}.pdf`
     }

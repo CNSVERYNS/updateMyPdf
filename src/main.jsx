@@ -92,6 +92,29 @@ const decodePdfFile = (base64, filename) => {
   return new File([bytes], filename, { type: 'application/pdf' })
 }
 
+const mergeAssistantFacts = (previous = [], next = []) => {
+  const merged = new Map()
+  ;[...(Array.isArray(previous) ? previous : []), ...(Array.isArray(next) ? next : [])].forEach((fact) => {
+    if (!fact?.key || !fact?.value) return
+    merged.set(String(fact.key), { key: String(fact.key), value: String(fact.value) })
+  })
+  return Array.from(merged.values()).slice(-80)
+}
+
+let pdfJsPromise = null
+const loadPdfJs = () => {
+  if (!pdfJsPromise) {
+    pdfJsPromise = Promise.all([
+      import('pdfjs-dist'),
+      import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+    ]).then(([pdfjs, worker]) => {
+      pdfjs.GlobalWorkerOptions.workerSrc = worker.default
+      return pdfjs
+    })
+  }
+  return pdfJsPromise
+}
+
 const downloadBase64File = (base64, filename, mimeType) => {
   const binary = window.atob(base64)
   const bytes = new Uint8Array(binary.length)
@@ -615,8 +638,8 @@ function App() {
           documentTitle: assistantData.documentTitle || assistantProfile?.documentTitle || null,
           documentLanguage: assistantData.documentLanguage || assistantProfile?.documentLanguage || null,
           jurisdiction: assistantData.jurisdiction || assistantProfile?.jurisdiction || null,
-          facts: assistantData.facts || assistantProfile?.facts || [],
-          researchSources: assistantData.researchSources || assistantProfile?.researchSources || [],
+          facts: mergeAssistantFacts(assistantProfile?.facts, assistantData.facts),
+          researchSources: assistantData.researchSources?.length ? assistantData.researchSources : (assistantProfile?.researchSources || []),
         })
         let assistantText = assistantData.reply || 'Belge akışını hazırlıyorum.'
         if (assistantData.researchSources?.length) assistantText += `\n\nAraştırma kaynakları:\n${assistantData.researchSources.slice(0, 4).map((source) => `• ${source.title}: ${source.url}`).join('\n')}`
@@ -830,7 +853,7 @@ function App() {
           >
             {fileUrl ? (
               <div className="uploaded-pdf" style={previewScale}>
-                <iframe title="PDF preview" src={`${fileUrl}#page=${currentPage}`} />
+                <PdfPreview src={fileUrl} page={currentPage} onPageCount={setPageCount} />
               </div>
             ) : (
               <div className="empty-viewer">
@@ -947,6 +970,58 @@ function DemoDocument({ change, style }) {
       <div className="doc-footer"><span>ACME STUDIO</span><span>01</span></div>
     </div>
   )
+}
+
+function PdfPreview({ src, page, onPageCount }) {
+  const canvasRef = useRef(null)
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    let documentLoadingTask = null
+    let pdfDocument = null
+    let renderTask = null
+    setLoading(true)
+    setError('')
+
+    const renderPage = async () => {
+      try {
+        const { getDocument } = await loadPdfJs()
+        documentLoadingTask = getDocument({ url: src })
+        pdfDocument = await documentLoadingTask.promise
+        if (cancelled) return
+        onPageCount(pdfDocument.numPages)
+        const pdfPage = await pdfDocument.getPage(Math.min(Math.max(1, page), pdfDocument.numPages))
+        if (cancelled) return
+        const viewport = pdfPage.getViewport({ scale: 1.35 })
+        const canvas = canvasRef.current
+        if (!canvas) return
+        const context = canvas.getContext('2d', { alpha: false })
+        const deviceScale = Math.min(window.devicePixelRatio || 1, 2)
+        canvas.width = Math.floor(viewport.width * deviceScale)
+        canvas.height = Math.floor(viewport.height * deviceScale)
+        canvas.style.aspectRatio = `${viewport.width} / ${viewport.height}`
+        renderTask = pdfPage.render({ canvasContext: context, viewport, transform: deviceScale !== 1 ? [deviceScale, 0, 0, deviceScale, 0, 0] : null })
+        await renderTask.promise
+        if (!cancelled) setLoading(false)
+      } catch (renderError) {
+        if (!cancelled && renderError?.name !== 'RenderingCancelledException') {
+          setError('PDF preview bu belgeyi görüntüleyemedi. İndirme yine kullanılabilir.')
+          setLoading(false)
+        }
+      }
+    }
+    renderPage()
+    return () => {
+      cancelled = true
+      renderTask?.cancel()
+      documentLoadingTask?.destroy()
+      pdfDocument?.destroy()
+    }
+  }, [src, page, onPageCount])
+
+  return <div className="pdf-preview-canvas-wrap">{error ? <div className="pdf-preview-state error">{error}</div> : <canvas ref={canvasRef} className={`pdf-preview-canvas ${loading ? 'loading' : ''}`} aria-label="PDF preview" />}{loading && !error && <div className="pdf-preview-state">PDF preview hazırlanıyor...</div>}</div>
 }
 
 function AssistantQuestionsCard({ questions, onSubmit, disabled }) {
