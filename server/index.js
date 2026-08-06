@@ -858,6 +858,30 @@ const editPlanSchema = {
   required: ['assistantMessage', 'summary', 'actions'],
 }
 
+const translationPlanSchema = {
+  type: 'object',
+  additionalProperties: false,
+  properties: {
+    assistantMessage: { type: 'string' },
+    summary: { type: 'string' },
+    actions: {
+      type: 'array',
+      items: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          type: { type: 'string', enum: ['translate'] },
+          page: { type: 'integer' },
+          text: { type: 'string' },
+          replacement: { type: 'string' },
+        },
+        required: ['type', 'page', 'text', 'replacement'],
+      },
+    },
+  },
+  required: ['assistantMessage', 'summary', 'actions'],
+}
+
 const documentAssistantSchema = {
   type: 'object',
   additionalProperties: false,
@@ -1891,9 +1915,12 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
       image_url: `data:${imageFile.mimetype};base64,${imageFile.buffer.toString('base64')}`,
     })
     content.push({ type: 'input_text', text: prompt })
+    const commandInstructions = translationMode
+      ? `${systemInstructions}\n\nTranslation mode: translate the complete document into the language requested by the user. Return one compact translate action per identifiable original text block, preserving the original page number and source text exactly. Return only the fields allowed by the translation schema; never add null fields, commentary, or unsupported action types.`
+      : systemInstructions
     const result = await client.responses.create({
       model: pdfEditorModel(),
-      instructions: systemInstructions,
+      instructions: commandInstructions,
       input: [{
         role: 'user',
         content,
@@ -1901,12 +1928,12 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
       text: {
         format: {
           type: 'json_schema',
-          name: 'pdf_edit_plan',
+          name: translationMode ? 'pdf_translation_plan' : 'pdf_edit_plan',
           strict: true,
-          schema: editPlanSchema,
+          schema: translationMode ? translationPlanSchema : editPlanSchema,
         },
       },
-      max_output_tokens: translationMode ? 16000 : 8000,
+      max_output_tokens: translationMode ? 24000 : 8000,
       reasoning: { effort: 'low' },
     }, { timeout: 180000 })
 

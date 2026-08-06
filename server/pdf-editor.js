@@ -108,7 +108,7 @@ const underlineText = async (pdfDocument, pdfBytes, action) => {
 const replaceText = async (pdfDocument, pdfBytes, action, cachedPages = null, cachedFont = null) => {
   const pagesWithText = cachedPages || await getTextItems(pdfBytes)
   const selectedPages = action.page ? pagesWithText.filter((page) => page.pageNumber === action.page) : pagesWithText
-  const font = cachedFont || await pdfDocument.embedFont(StandardFonts.Helvetica)
+  const font = cachedFont || await getFont(pdfDocument, action)
   let matchCount = 0
 
   for (const pageData of selectedPages) {
@@ -165,7 +165,7 @@ const embedCachedFont = (pdfDocument, key, bytes) => {
 }
 
 const getFont = async (pdfDocument, action = {}) => {
-  const actionText = String(action.text || action.replacement || '')
+  const actionText = `${String(action.text || '')} ${String(action.replacement || '')}`
   if (/[^\x00-\x7F]/.test(actionText)) {
     const fontPath = action.fontWeight === 'bold'
       ? (action.fontStyle === 'italic' ? 'C:\\Windows\\Fonts\\segoeubz.ttf' : 'C:\\Windows\\Fonts\\segoeuib.ttf')
@@ -805,9 +805,8 @@ export async function applyEditPlan(pdfBuffer, actions = [], assets = {}) {
 
   const replacementActions = actions.filter((item) => ['replace_text', 'rewrite_text', 'translate'].includes(item.type) && item.text && item.replacement !== null)
   const replacementPages = replacementActions.length ? await getTextItems(originalBytes) : null
-  const replacementFont = replacementActions.length ? await pdfDocument.embedFont(StandardFonts.Helvetica) : null
   for (const action of replacementActions) {
-    const matchCount = await replaceText(pdfDocument, originalBytes, action, replacementPages, replacementFont)
+    const matchCount = await replaceText(pdfDocument, originalBytes, action, replacementPages)
     appliedActions.push({ type: action.type, page: action.page, text: action.text, replacement: action.replacement, applied: matchCount > 0, matchCount })
     if (!matchCount) warnings.push(`Değiştirilecek metin bulunamadı: “${action.text}”`)
   }
