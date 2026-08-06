@@ -969,7 +969,21 @@ function App() {
       formData.append('prompt', cleanPrompt)
       formData.append('file', file)
       if (imageFile) formData.append('image', imageFile)
-      const result = await apiFetch('/api/ai/command', { method: 'POST', headers: authHeaders(), body: formData })
+      let result = await apiFetch('/api/ai/command', { method: 'POST', headers: authHeaders(), body: formData })
+      if (result.status === 202) {
+        const queued = await result.json().catch(() => ({}))
+        if (!queued.jobId || !queued.jobToken) throw new Error('Uzun PDF iÅŸlemi baÅŸlatÄ±lamadÄ±.')
+        setToast({ tone: 'info', text: `${queued.pageCount || 'Uzun'} sayfalÄ±k PDF Ã§evirisi arka planda sÃ¼rÃ¼yor.` })
+        const deadline = Date.now() + 15 * 60 * 1000
+        while (Date.now() < deadline) {
+          await new Promise((resolve) => window.setTimeout(resolve, 2500))
+          const polled = await apiFetch(`/api/ai/command/${encodeURIComponent(queued.jobId)}`, { headers: { ...authHeaders(), 'X-AI-Job-Token': queued.jobToken } })
+          if (polled.status === 202) continue
+          result = polled
+          break
+        }
+        if (result.status === 202) throw new Error('Uzun PDF Ã§evirisi beklenen sÃ¼rede tamamlanmadÄ±. Ä°ÅŸlemi daha kÃ¼Ã§Ã¼k sayfa aralÄ±klarÄ±yla deneyebilirsin.')
+      }
       const rawResponse = await result.text()
       let data = {}
       try {
