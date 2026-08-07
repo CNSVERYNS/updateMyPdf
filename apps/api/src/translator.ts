@@ -131,9 +131,10 @@ class AzureTranslator implements DocumentTranslator {
     renderForm.append('source', new Blob([documentPart], { type: 'application/pdf' }), 'source.pdf')
     renderForm.append('translations', JSON.stringify(translations))
     const rendered = await this.qualityServiceRequest('/render-preserved-layout', renderForm)
-    let renderDetails: { missingBlocks?: number; failedBlocks?: number } = {}
+    let renderDetails: { missingBlocks?: number; failedBlocks?: number; selectedQualityScore?: number; qualityGatePassed?: boolean } = {}
     try { renderDetails = JSON.parse(rendered.headers.get('x-render-preserved-layout') || '{}') } catch {}
     if ((renderDetails.missingBlocks || 0) > 0 || (renderDetails.failedBlocks || 0) > 0) throw new Error('PDF_TRANSLATION_RENDER_INCOMPLETE')
+    if (renderDetails.qualityGatePassed !== true || Number(renderDetails.selectedQualityScore || 0) < this.config.QUALITY_PASS_SCORE) throw new Error('PDF_TRANSLATION_QUALITY_GATE_FAILED')
     return Buffer.from(await rendered.arrayBuffer())
   }
 

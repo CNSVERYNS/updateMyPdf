@@ -88,32 +88,8 @@ export class JobService {
       await this.storage.upload(this.config.AZURE_STORAGE_TARGET_CONTAINER, job.targetBlobName!, result, job.sourceMimeType)
       await this.repo.recordFile({ jobId: job.id, role: 'target', blobName: job.targetBlobName!, mimeType: job.sourceMimeType, sizeBytes: result.length, sha256: hashBytes(result) })
       await this.finish(job.id, source, result)
-    } catch (error) {
-      if (this.shouldFallbackToBatch(error)) {
-        try {
-          await this.submitBatchFallback(job)
-          return
-        } catch (fallbackError) {
-          await this.fail(job.id, fallbackError)
-          return
-        }
-      }
-      await this.fail(job.id, error)
+    } catch (error) { await this.fail(job.id, error)
     } finally { this.preserveLocks.delete(job.id) }
-  }
-
-  private shouldFallbackToBatch(error: unknown) {
-    const code = String((error as any)?.code || (error as any)?.message || '')
-    return ['PDF_NO_EXTRACTABLE_TEXT', 'PDF_TRANSLATION_EMPTY_BLOCK', 'PDF_TRANSLATION_INCOMPLETE', 'PDF_TRANSLATION_RENDER_INCOMPLETE', 'PDF_PRESERVE_SERVICE_FAILED'].some((value) => code.startsWith(value))
-  }
-
-  private async submitBatchFallback(job: TranslationJob) {
-    const current = await this.mustGet(job.id)
-    if (current.azureOperationId || !['submitted', 'translating'].includes(current.status)) return
-    const sourceUrl = await this.storage.createReadSas(this.config.AZURE_STORAGE_SOURCE_CONTAINER, current.sourceBlobName!, this.config.SOURCE_SAS_TTL_MINUTES)
-    const targetUrl = await this.storage.createTargetSas(this.config.AZURE_STORAGE_TARGET_CONTAINER, current.targetBlobName!, this.config.TARGET_SAS_TTL_MINUTES)
-    const operation = await this.translator.submitBatch({ sourceUrl, targetUrl, sourceLanguage: current.sourceLanguage, targetLanguage: current.targetLanguage, sourceBlobName: current.sourceBlobName!, targetBlobName: current.targetBlobName!, sourceContainer: this.config.AZURE_STORAGE_SOURCE_CONTAINER, targetContainer: this.config.AZURE_STORAGE_TARGET_CONTAINER, mimeType: current.sourceMimeType })
-    await this.repo.update(current.id, { translationMode: 'batch', azureOperationId: operation.operationId, azureOperationUrl: operation.operationUrl, currentStage: 'translation_submitted', progress: Math.max(current.progress, 28) })
   }
 
   private async runSync(job: TranslationJob) {
@@ -170,12 +146,14 @@ export class JobService {
     if (job.status === 'translating') await this.repo.transition(id, 'downloading', 'result_download_started', 'Translated result stored')
     if ((await this.repo.get(id))?.status === 'downloading') await this.repo.transition(id, 'quality_check', 'quality_check_started', 'Quality check started')
     const quality = await inspectQuality(this.config, source, result, job.sourceExtension)
-    const status = quality.score >= this.config.QUALITY_PASS_SCORE ? 'completed' : quality.score >= this.config.QUALITY_WARNING_SCORE ? 'completed_with_warnings' : 'failed'
+    // Translation is fail-closed: a readable-but-damaged PDF is worse than a
+    // retryable error, so only a full quality-pass may become downloadable.
+    const status = quality.score >= this.config.QUALITY_PASS_SCORE ? 'completed' : 'failed'
     const visualProfile = this.visualProfiles.get(id)
     const updates: Partial<TranslationJob> = { resultSizeBytes: result.length, resultPageCount: quality.resultPageCount, qualityScore: quality.score, qualityWarnings: quality.warnings, qualityReport: { ...quality.qualityLayers, visualReview: visualProfile || { status: 'not_run' } }, progress: 100, completedAt: new Date().toISOString(), ...(status === 'failed' ? { errorCode: 'QUALITY_CHECK_FAILED', errorMessage: 'Çıktı kalite kontrolünden geçemedi.' } : {}) }
     await this.repo.update(id, updates)
     this.visualProfiles.delete(id)
-    await this.repo.transition(id, status, 'quality_check_completed', status === 'completed' ? 'Translation completed' : status === 'completed_with_warnings' ? 'Translation completed with warnings' : 'Quality check failed')
+    await this.repo.transition(id, status, 'quality_check_completed', status === 'completed' ? 'Translation completed' : 'Quality check failed')
     try {
       await this.usage?.record({
         jobId: id,
@@ -203,10 +181,11 @@ export class JobService {
   private async mustGet(id: string) { const job = await this.repo.get(id); if (!job) throw new Error('JOB_NOT_FOUND'); return job }
   private async fail(id: string, error: unknown) { const job = await this.repo.get(id); if (!job || ['failed', 'deleted', 'expired'].includes(job.status)) return; const code = String((error as any)?.code || (error as any)?.message || 'INTERNAL_ERROR').split(':')[0]; await this.repo.update(id, { errorCode: code, errorMessage: this.userMessage(code), errorDetails: { status: (error as any)?.status || null } }); await this.repo.transition(id, 'failed', 'job_failed', this.userMessage(code), { code }) }
   private userMessage(code: string) {
-    const fallbackMessages: Record<string, string> = {
-      PDF_NO_EXTRACTABLE_TEXT: 'Bu PDF taranmış veya görüntü tabanlı olabilir; alternatif PDF çeviri akışı da başlatılamadı.',
-      PDF_PRESERVE_SERVICE_FAILED: 'PDF düzen koruma katmanı kullanılamadı; alternatif PDF çeviri akışı da başlatılamadı.',
+    const specificMessages: Record<string, string> = {
+      PDF_NO_EXTRACTABLE_TEXT: 'Bu PDF taranmış veya görüntü tabanlı; metin katmanı olmadığı için düzeni güvenli biçimde korunarak çevrilemedi.',
+      PDF_PRESERVE_SERVICE_FAILED: 'PDF düzen kontrol servisine ulaşılamadı; bozuk çıktı teslim edilmedi. Lütfen tekrar deneyin.',
+      PDF_TRANSLATION_QUALITY_GATE_FAILED: 'Çeviri düzen kontrolünden geçmedi; üst üste binmiş veya bozulmuş çıktı teslim edilmedi.',
     }
-    if (fallbackMessages[code]) return fallbackMessages[code]
+    if (specificMessages[code]) return specificMessages[code]
     const messages: Record<string, string> = { PDF_PASSWORD_PROTECTED: 'Bu PDF parola korumalı. Çeviri için parolasız bir kopya yükleyin.', PDF_MALFORMED: 'PDF dosyası açılamadı veya bozuk görünüyor.', FILE_TOO_MANY_PAGES: `PDF en fazla ${this.config.MAX_PDF_PAGES} sayfa olabilir.`, UNSUPPORTED_FILE_TYPE: 'Bu dosya türü desteklenmiyor.', QUALITY_CHECK_FAILED: 'Çeviri oluşturuldu ancak kalite kontrolünden geçemedi.', PDF_TRANSLATION_EMPTY_BLOCK: 'PDF çevirisinde boş metin bloğu oluştu; eksik çıktı teslim edilmedi.', PDF_TRANSLATION_INCOMPLETE: 'PDF çevirisi bazı metin bloklarını çevirmedi; eksik çıktı teslim edilmedi.', PDF_TRANSLATION_RENDER_INCOMPLETE: 'PDF çevirisi bazı metin bloklarını sayfaya yerleştiremedi; eksik çıktı teslim edilmedi.', RESULT_NOT_READY: 'Çeviri henüz hazır değil.' }; return messages[code] || 'Belge işlenirken beklenmeyen bir hata oluştu.' }
 }

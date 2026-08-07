@@ -398,6 +398,118 @@ def visual_layout_review(source: fitz.Document, result: fitz.Document) -> dict[s
     }
 
 
+def _rect_area(rect: fitz.Rect) -> float:
+    return max(0.0, float(rect.width)) * max(0.0, float(rect.height))
+
+
+def _intersection_ratio(left: fitz.Rect, right: fitz.Rect) -> float:
+    intersection = left & right
+    if intersection.is_empty:
+        return 0.0
+    return _rect_area(intersection) / max(1.0, min(_rect_area(left), _rect_area(right)))
+
+
+def block_geometry_review(source: fitz.Document, result: fitz.Document) -> dict[str, Any]:
+    """Perform a strict one-to-one geometry check for every text paragraph.
+
+    Page-level raster review can miss two neighboring text boxes that overlap
+    only in their text geometry. This pass matches each source block to one
+    result block, checks its top-left position and page bounds, then compares
+    every result block with every other result block for collisions.
+    """
+    issues: list[dict[str, Any]] = []
+    page_scores: list[dict[str, Any]] = []
+    total_source = 0
+    total_result = 0
+    matched = 0
+    missing = 0
+    position_drifts = 0
+    overlaps = 0
+    line_overlaps = 0
+    overflow = 0
+
+    for page_index in range(max(len(source), len(result))):
+        source_page = source[page_index] if page_index < len(source) else None
+        result_page = result[page_index] if page_index < len(result) else None
+        source_blocks = text_blocks(source_page) if source_page else []
+        result_blocks = text_blocks(result_page) if result_page else []
+        total_source += len(source_blocks)
+        total_result += len(result_blocks)
+        page_issues: list[dict[str, Any]] = []
+        used: set[int] = set()
+
+        if source_page is None or result_page is None:
+            page_issues.append({"type": "page-missing", "severity": "high", "page": page_index + 1, "message": "Kaynak ve çıktı sayfaları birebir eşleşmiyor."})
+
+        for source_block in source_blocks:
+            source_rect = fitz.Rect(source_block["rect"])
+            source_center = source_block["center"]
+            candidates = [(index, block) for index, block in enumerate(result_blocks) if index not in used]
+            if not candidates:
+                missing += 1
+                page_issues.append({"type": "missing-block", "severity": "high", "page": page_index + 1, "message": "Kaynak paragraf için çıktı metin bloğu bulunamadı.", "sourceRect": [round(value, 2) for value in (source_rect.x0, source_rect.y0, source_rect.x1, source_rect.y1)]})
+                continue
+            index, result_block = min(
+                candidates,
+                key=lambda item: abs(item[1]["center"][1] - source_center[1]) + abs(item[1]["center"][0] - source_center[0]) * 0.15,
+            )
+            used.add(index)
+            matched += 1
+            result_rect = fitz.Rect(result_block["rect"])
+            position_distance = abs(result_rect.y0 - source_rect.y0) + abs(result_rect.x0 - source_rect.x0) * 0.15
+            position_tolerance = max(12.0, source_rect.height * 2.5)
+            if position_distance > position_tolerance:
+                position_drifts += 1
+                page_issues.append({"type": "block-position-drift", "severity": "high", "page": page_index + 1, "message": "Çevrilen paragraf kaynak konumundan fazla uzaklaştı.", "distance": round(position_distance, 2), "tolerance": round(position_tolerance, 2)})
+            if result_page and (result_rect.x0 < result_page.rect.x0 - 1 or result_rect.y0 < result_page.rect.y0 - 1 or result_rect.x1 > result_page.rect.x1 + 1 or result_rect.y1 > result_page.rect.y1 + 1):
+                overflow += 1
+                page_issues.append({"type": "block-overflow", "severity": "high", "page": page_index + 1, "message": "Çevrilen paragraf sayfa sınırlarının dışına taştı."})
+
+        for left_index, left_block in enumerate(result_blocks):
+            left_rect = fitz.Rect(left_block["rect"])
+            for right_block in result_blocks[left_index + 1:]:
+                right_rect = fitz.Rect(right_block["rect"])
+                overlap_ratio = _intersection_ratio(left_rect, right_rect)
+                if overlap_ratio >= 0.28:
+                    overlaps += 1
+                    page_issues.append({"type": "block-overlap", "severity": "high", "page": page_index + 1, "message": "Çıktıda iki paragrafın metin alanı üst üste biniyor.", "overlapRatio": round(overlap_ratio, 3)})
+
+        result_lines = [line for block in result_blocks for line in block.get("lineBoxes", [])]
+        for left_index, left_line in enumerate(result_lines):
+            left_rect = fitz.Rect(left_line["rect"])
+            for right_line in result_lines[left_index + 1:]:
+                right_rect = fitz.Rect(right_line["rect"])
+                earlier, later = sorted((left_rect, right_rect), key=lambda rect: rect.y0)
+                overlap_ratio = _intersection_ratio(left_rect, right_rect)
+                line_collision = later.y0 < earlier.y0 + earlier.height * 0.75
+                if overlap_ratio >= 0.03 and line_collision:
+                    line_overlaps += 1
+                    overlaps += 1
+                    page_issues.append({"type": "line-overlap", "severity": "high", "page": page_index + 1, "message": "Çıktıda iki metin satırı üst üste biniyor.", "overlapRatio": round(overlap_ratio, 3)})
+
+        unmatched_result = max(0, len(result_blocks) - len(used))
+        page_score = max(0, 100 - min(60, sum(1 for issue in page_issues if issue["type"] == "missing-block") * 30) - min(50, sum(1 for issue in page_issues if issue["type"] == "block-position-drift") * 18) - min(60, sum(1 for issue in page_issues if issue["type"] == "block-overlap") * 30) - min(40, sum(1 for issue in page_issues if issue["type"] == "block-overflow") * 25))
+        page_scores.append({"page": page_index + 1, "score": page_score, "sourceBlocks": len(source_blocks), "resultBlocks": len(result_blocks), "matchedBlocks": len(used), "unmatchedResultBlocks": unmatched_result, "issues": page_issues[:20]})
+        issues.extend(page_issues)
+
+    score = min((page["score"] for page in page_scores), default=100 if len(source) == 0 else 0)
+    return {
+        "score": score,
+        "status": "pass" if score >= PASS_SCORE else "fail",
+        "engine": "deterministic-block-geometry-review",
+        "sourceBlocks": total_source,
+        "resultBlocks": total_result,
+        "matchedBlocks": matched,
+        "missingBlocks": missing,
+        "positionDrifts": position_drifts,
+        "overlapCount": overlaps,
+        "lineOverlapCount": line_overlaps,
+        "overflowCount": overflow,
+        "issues": issues[:80],
+        "pageScores": page_scores,
+    }
+
+
 def visual_profile(source_bytes: bytes, include_captures: bool = False) -> dict[str, Any]:
     """Create a compact page profile for strategy selection and AI review.
 
@@ -536,6 +648,7 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
     drawing_ratio = ratio(result_metrics["drawings"], source_metrics["drawings"]) if source_metrics["drawings"] else 1.0
     typography_match = typography_consistency(source, result)
     visual_review = visual_layout_review(source, result)
+    block_geometry = block_geometry_review(source, result)
     source_text_for_comparison = "\n".join(page.get_text("text") or "" for page in source)
     result_text_for_comparison = "\n".join(page.get_text("text") or "" for page in result)
     translation_text_similarity = round(difflib.SequenceMatcher(None, source_text_for_comparison, result_text_for_comparison, autojunk=False).ratio(), 3)
@@ -592,6 +705,9 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
     if visual_review["score"] < PASS_SCORE:
         for issue in visual_review["issues"][:5]:
             warnings.append(f"Görsel kontrol: {issue['message']}")
+    if block_geometry["score"] < PASS_SCORE:
+        for issue in block_geometry["issues"][:5]:
+            warnings.append(f"Blok kontrolü: {issue['message']}")
 
     page_score = 100
     page_score -= 35 if len(source_pages) != len(result_pages) else 0
@@ -620,7 +736,7 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
     layout_score = 100
     layout_score -= min(25, len(overflow_pages) * 15)
     layout_score -= min(25, len(blank_pages) * 15)
-    layout_score = max(0, layout_score)
+    layout_score = max(0, min(layout_score, block_geometry["score"]))
 
     quality_layers = {
         "fileIntegrity": {"score": 100, "status": "pass", "sourceBytes": len(source_bytes), "resultBytes": len(result_bytes)},
@@ -630,14 +746,15 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
         "typographyConsistency": {**typography_match, "status": "pass" if typography_match["score"] >= PASS_SCORE else "warning"},
         "visualAssets": {"score": visual_score, "status": "pass" if visual_score >= PASS_SCORE else "warning", "sourceImages": source_metrics["images"], "resultImages": result_metrics["images"], "sourceUniqueImages": source_metrics["uniqueImages"], "resultUniqueImages": result_metrics["uniqueImages"], "sourceDrawings": source_metrics["drawings"], "resultDrawings": result_metrics["drawings"], "imageRatio": image_ratio, "drawingRatio": drawing_ratio},
         "visualReview": visual_review,
+        "blockGeometry": block_geometry,
         "layout": {"score": layout_score, "status": "pass" if layout_score >= PASS_SCORE else "warning", "sourceTextBlocks": source_metrics["textBlocks"], "resultTextBlocks": result_metrics["textBlocks"], "sourceLinks": source_metrics["links"], "resultLinks": result_metrics["links"], "sourceAnnotations": source_metrics["annotations"], "resultAnnotations": result_metrics["annotations"], "overflowPages": overflow_pages, "blankPages": sorted(set(blank_pages))},
     }
     weighted_score = round((page_score * 0.18) + (text_score * 0.22) + (typography_score * 0.18) + (visual_score * 0.12) + (visual_review["score"] * 0.15) + (layout_score * 0.15))
     # A document is only as good as its weakest critical layer. This prevents
     # a high weighted average from hiding omitted text or broken layout.
-    score = max(0, min(100, weighted_score, page_score, text_score, typography_score, visual_score, visual_review["score"], layout_score))
+    score = max(0, min(100, weighted_score, page_score, text_score, typography_score, visual_score, visual_review["score"], block_geometry["score"], layout_score))
     return {
-        "passed": score >= WARNING_SCORE,
+        "passed": score >= PASS_SCORE,
         "score": score,
         "warnings": warnings,
         "sourcePageCount": len(source_pages),
@@ -963,6 +1080,58 @@ def insert_single_line_text(page: fitz.Page, document: fitz.Document, source_blo
     return False
 
 
+def insert_explicit_line_text(page: fitz.Page, document: fitz.Document, source_block: dict[str, Any], translated_text: str, font_cache: dict[str, str], global_scale: float) -> bool:
+    """Render an explicitly line-broken block atomically.
+
+    Some documents contain deliberate line breaks in headings or labels. Fit
+    every line first and only commit the shapes after all lines fit; this avoids
+    leaving half a paragraph behind when one line cannot be placed safely.
+    """
+    line_boxes = source_block.get("lineBoxes") or []
+    if not line_boxes:
+        return False
+    translated_lines = [line.strip() for line in str(translated_text).replace("\r\n", "\n").split("\n")]
+    if len(translated_lines) != len(line_boxes) or any(not line for line in translated_lines):
+        return False
+    first_span = source_block["spans"][0]
+    base_size = max(float(first_span.get("size", 8)) * global_scale, MIN_FONT_SIZE)
+    font_name = source_font(page, document, first_span, font_cache, translated_text)
+    condensed_font_name = source_font(page, document, first_span, font_cache, translated_text, prefer_condensed=True)
+    fonts = []
+    for candidate in (font_name, condensed_font_name):
+        if candidate not in fonts:
+            fonts.append(candidate)
+    color = span_color(first_span)
+    alignment = int(source_block.get("alignment", block_alignment(source_block)))
+    shapes: list[Any] = []
+    for line_box, line_text in zip(line_boxes, translated_lines):
+        rect = fitz.Rect(line_box["rect"])
+        fitted_shape = None
+        for factor in (1.0, 0.97, 0.94, 0.90, 0.86, 0.82, 0.78, 0.74, 0.70, 0.65, 0.60):
+            size = max(MIN_FONT_SIZE, round(base_size * factor, 2))
+            for candidate_font in fonts:
+                for width_scale in (1.0, 0.94, 0.88, 0.82, 0.76):
+                    render_rect = fitz.Rect(rect.x0, rect.y0, rect.x0 + rect.width / width_scale, rect.y1)
+                    shape = page.new_shape()
+                    try:
+                        spare = shape.insert_textbox(render_rect, line_text, fontname=candidate_font, fontsize=size, color=color, align=alignment, lineheight=1.0, **({"morph": (fitz.Point(rect.x0, rect.y0), fitz.Matrix(width_scale, 1))} if width_scale != 1.0 else {}))
+                    except Exception:
+                        spare = -float("inf")
+                    if spare >= -0.01:
+                        fitted_shape = shape
+                        break
+                if fitted_shape is not None:
+                    break
+            if fitted_shape is not None:
+                break
+        if fitted_shape is None:
+            return False
+        shapes.append(fitted_shape)
+    for shape in shapes:
+        shape.commit(overlay=True)
+    return True
+
+
 def insert_preserved_text(page: fitz.Page, document: fitz.Document, source_block: dict[str, Any], translated_text: str, font_cache: dict[str, str], global_scale: float = 1.0) -> bool:
     rect = fitz.Rect(source_block.get("renderRect", source_block["rect"]))
     if rect.is_empty or not translated_text.strip():
@@ -970,20 +1139,13 @@ def insert_preserved_text(page: fitz.Page, document: fitz.Document, source_block
     first_span = source_block["spans"][0]
     base_size = max(float(first_span.get("size", 8)) * global_scale, 5)
 
-    # Azure preserves the source line count for this block. Render each line
-    # in its original bbox so text cannot reflow into the next line or column.
+    # A translated sentence is often longer than the source line. Rendering
+    # each translated line into the original line boxes makes the text collide
+    # or forces it into unreadable horizontal compression. Render the complete
+    # paragraph inside the safe rectangle instead; the renderer then wraps it
+    # naturally and the visual gate checks the resulting geometry.
     alignment = int(source_block.get("alignment", block_alignment(source_block)))
-    line_boxes = source_block.get("lineBoxes") or []
-    if line_boxes:
-        translated_lines = translation_lines_for_boxes(translated_text, line_boxes, base_size)
-        if len(translated_lines) != len(line_boxes):
-            return False
-        for line_box, line_text in zip(line_boxes, translated_lines):
-            if not line_text.strip():
-                continue
-            line_source = {"rect": line_box["rect"], "renderRect": line_box["rect"], "spans": line_box["spans"], "alignment": alignment}
-            if not insert_single_line_text(page, document, line_source, line_text, font_cache, global_scale):
-                return False
+    if "\n" in translated_text and insert_explicit_line_text(page, document, source_block, translated_text, font_cache, global_scale):
         return True
 
     font_name = source_font(page, document, first_span, font_cache, translated_text)
@@ -994,13 +1156,13 @@ def insert_preserved_text(page: fitz.Page, document: fitz.Document, source_block
     # line spacing. A very small lineheight can make insert_textbox report a
     # successful fit while glyphs overlap or become effectively unreadable.
     font_sizes = [round(base_size * factor, 2) for factor in (1.0, 0.97, 0.94, 0.90, 0.86, 0.82, 0.78, 0.74, 0.70, 0.65, 0.60)]
-    font_sizes.extend([4.5, 4.0, 3.5, 3.0, 2.5])
-    font_sizes = sorted({max(2.0, size) for size in font_sizes}, reverse=True)
+    font_sizes.append(MIN_FONT_SIZE)
+    font_sizes = sorted({max(MIN_FONT_SIZE, size) for size in font_sizes}, reverse=True)
     candidate_fonts = []
     for candidate in (font_name, condensed_font_name):
         if candidate not in candidate_fonts:
             candidate_fonts.append(candidate)
-    for lineheight in (1.0, 0.95, 0.90, 0.85, 0.78, 0.72):
+    for lineheight in (1.15, 1.10, 1.05, 1.0):
         for size in font_sizes:
             for candidate_font in candidate_fonts:
                 render_rect = fitz.Rect(rect.x0, rect.y0, rect.x1, rect.y1)
@@ -1023,7 +1185,7 @@ def insert_preserved_text(page: fitz.Page, document: fitz.Document, source_block
 
     # Use proportional compression only after the readable candidates fail.
     for size in font_sizes:
-        for width_scale in (0.97, 0.94, 0.90, 0.85, 0.80):
+        for width_scale in (0.97, 0.94, 0.90, 0.86):
             render_rect = fitz.Rect(rect.x0, rect.y0, rect.x0 + rect.width / width_scale, rect.y1)
             shape = page.new_shape()
             try:
@@ -1043,25 +1205,10 @@ def insert_preserved_text(page: fitz.Page, document: fitz.Document, source_block
                 shape.commit(overlay=True)
                 return True
 
-    # Do not silently drop a block. Use the remaining vertical space as a
-    # final completeness fallback and let the quality report flag tiny text.
-    fallback_rect = fitz.Rect(rect.x0, rect.y0, rect.x1, page.rect.y1 - 2)
-    shape = page.new_shape()
-    try:
-        spare = shape.insert_textbox(
-            fallback_rect,
-            translated_text,
-            fontname=condensed_font_name,
-            fontsize=2.0,
-            color=color,
-            align=alignment,
-            lineheight=0.72,
-        )
-    except Exception:
-        spare = -float("inf")
-    if spare >= -0.01:
-        shape.commit(overlay=True)
-        return True
+    # Never spill a paragraph into the rest of the page. A failed fit must
+    # remain a failed block so the caller can reject the candidate and try a
+    # safer scale instead of producing an apparently complete but corrupted
+    # document.
     return False
 
 
@@ -1143,6 +1290,18 @@ def page_integrity_preserved(report: dict[str, Any]) -> bool:
     )
 
 
+def translation_quality_gate(report: dict[str, Any]) -> bool:
+    layers = report.get("qualityLayers", {})
+    block_layer = layers.get("blockGeometry")
+    visual_layer = layers.get("visualReview")
+    return (
+        report.get("score", 0) >= PASS_SCORE
+        and page_integrity_preserved(report)
+        and (block_layer is None or block_layer.get("score", 0) >= PASS_SCORE)
+        and (visual_layer is None or visual_layer.get("score", 0) >= PASS_SCORE)
+    )
+
+
 def render_preserved_layout(source_bytes: bytes, translations: dict[str, str]) -> tuple[bytes, dict[str, Any]]:
     """Render candidates and progressively shrink all text only when layout breaks."""
     shrink_steps = [0.00, 0.03, 0.05, 0.07, 0.10, 0.14, 0.18, 0.22, 0.27, 0.32]
@@ -1154,9 +1313,9 @@ def render_preserved_layout(source_bytes: bytes, translations: dict[str, str]) -
         candidate = {"output": output, "render": render_details, "report": report, "scale": scale}
         candidates.append(candidate)
         complete = render_details.get("missingBlocks", 0) == 0 and render_details.get("failedBlocks", 0) == 0
-        if shrink == 0 and complete and page_integrity_preserved(report) and report["score"] >= 95:
+        if shrink == 0 and complete and translation_quality_gate(report):
             break
-        if shrink > 0 and complete and page_integrity_preserved(report) and report["score"] >= 95:
+        if shrink > 0 and complete and translation_quality_gate(report):
             break
     best = max(
         candidates,
@@ -1175,6 +1334,7 @@ def render_preserved_layout(source_bytes: bytes, translations: dict[str, str]) -
         "shrinkPercent": round((1 - best["scale"]) * 100, 1),
         "selectedQualityScore": best["report"]["score"],
         "pageIntegrityPreserved": page_integrity_preserved(best["report"]),
+        "qualityGatePassed": translation_quality_gate(best["report"]),
         "candidateScores": [
             {"scale": candidate["scale"], "score": candidate["report"]["score"], "pageIntegrity": page_integrity_preserved(candidate["report"]), "missingBlocks": candidate["render"].get("missingBlocks", 0), "failedBlocks": candidate["render"].get("failedBlocks", 0)}
             for candidate in candidates

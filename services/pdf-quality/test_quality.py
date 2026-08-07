@@ -79,6 +79,28 @@ def test_missing_distant_text_block_cannot_pass_position_gate():
     assert report["passed"] is False
 
 
+def test_overlapping_result_blocks_cannot_pass_block_geometry_gate():
+    source_document = fitz.open()
+    source_page = source_document.new_page(width=300, height=400)
+    source_page.insert_text((40, 60), "First source paragraph")
+    source_page.insert_text((40, 160), "Second source paragraph")
+    source = source_document.tobytes()
+    source_document.close()
+
+    result_document = fitz.open()
+    result_page = result_document.new_page(width=300, height=400)
+    result_page.insert_text((40, 60), "First translated paragraph")
+    result_page.insert_text((40, 64), "Second translated paragraph")
+    result = result_document.tobytes()
+    result_document.close()
+
+    report = inspect_documents(source, result)
+    geometry = report["qualityLayers"]["blockGeometry"]
+    assert geometry["overlapCount"] >= 1
+    assert geometry["score"] < 90
+    assert report["passed"] is False
+
+
 def test_malformed_pdf_fails():
     result = inspect_documents(make_pdf(), b"not a pdf")
     assert result["passed"] is False
