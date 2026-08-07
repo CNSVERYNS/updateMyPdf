@@ -131,7 +131,7 @@ DELETE /api/v1/jobs/:jobId
 POST   /api/v1/cleanup                internal
 ```
 
-Upload form alanları: `file`, `sourceLanguage` (`auto` olabilir), `targetLanguage`, `preserveLayout`.
+Upload form alanları: `file`, `sourceLanguage` (`auto` olabilir) ve `targetLanguage`. PDF yaklaşımı backend tarafından otomatik seçilir.
 
 Örnek PowerShell:
 
@@ -140,7 +140,6 @@ $form = @{
   file = Get-Item .\sample.pdf
   sourceLanguage = 'auto'
   targetLanguage = 'tr'
-  preserveLayout = 'true'
 }
 $upload = Invoke-RestMethod -Uri http://localhost:4000/api/v1/uploads -Method Post -Form $form
 Invoke-RestMethod -Uri "http://localhost:4000/api/v1/jobs/$($upload.jobId)/start" -Method Post

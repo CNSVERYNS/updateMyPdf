@@ -95,7 +95,7 @@ const initialMessages = [
   {
     id: 1,
     role: 'assistant',
-    text: 'Merhaba! Bir PDF düzenleyebilir veya istediğin herhangi bir belgeyi sıfırdan oluşturabilirim. Ne yapmak istersin?',
+    text: 'Merhaba! Ben updateMyPDF Document Edit Engine. Azure visual review, kalite kontrolü ve AI birlikte çalışır; PDF’ini yükle ve neyi değiştirmemi istediğini yaz.',
   },
 ]
 
@@ -224,6 +224,7 @@ function App() {
   const [isThinking, setIsThinking] = useState(false)
   const [longTaskProgress, setLongTaskProgress] = useState(null)
   const [aiStatus, setAiStatus] = useState('idle')
+  const [editEngineStatus, setEditEngineStatus] = useState('ready')
   const [pageCount, setPageCount] = useState(0)
   const [currentPage, setCurrentPage] = useState(1)
   const [zoom, setZoom] = useState(100)
@@ -978,6 +979,7 @@ function App() {
       formData.append('prompt', cleanPrompt)
       formData.append('file', file)
       if (imageFile) formData.append('image', imageFile)
+      setEditEngineStatus('reviewing')
       let result = await apiFetch('/api/ai/command', { method: 'POST', headers: authHeaders(), body: formData })
       if (result.status === 202) {
         const queued = await result.json().catch(() => ({}))
@@ -1008,6 +1010,7 @@ function App() {
       }
       if (data.tokenUsage) setTokenUsage(data.tokenUsage)
       if (!result.ok) throw new Error(data.error || 'AI isteği başarısız oldu.')
+      if (data.visualReview) setEditEngineStatus(data.visualReview.status === 'completed' ? 'live' : 'warning')
 
       const firstAction = data.actions?.[0]
       const actionLabel = firstAction?.type ? firstAction.type.replaceAll('_', ' ') : 'AI planı'
@@ -1050,7 +1053,8 @@ function App() {
       const officeNotice = officeExports.length ? `\nOffice çıktısı indirildi: ${officeExports.map((officeFile) => officeFile.fileName).join(', ')}` : ''
       const imageNotice = imageExports.length ? `\nGörsel çıktıları indirildi: ${imageExports.map((imageFileExport) => imageFileExport.fileName).join(', ')}` : ''
       const audioNotice = data.audioOverview?.data ? '\nAudio overview indirildi.' : ''
-      const warningText = `${data.warnings?.length ? ` ${data.warnings.join(' ')}` : ''}${analysisNotice}${officeNotice}${imageNotice}${audioNotice}${cloudSaveWarning}`
+      const visualNotice = data.visualReview?.status === 'completed' ? `\n\nAzure visual preflight tamamlandı: ${data.visualReview.documentStrategy || 'belgeye uygun yaklaşım'} seçildi.` : data.visualReview?.status === 'unavailable' ? '\n\nAzure visual preflight geçici olarak kullanılamadı; mevcut kalite kontrolüyle devam edildi.' : ''
+      const warningText = `${data.warnings?.length ? ` ${data.warnings.join(' ')}` : ''}${analysisNotice}${officeNotice}${imageNotice}${audioNotice}${visualNotice}${cloudSaveWarning}`
       const ocrText = data.ocrPages?.length
         ? data.ocrPages.map((page) => `Sayfa ${page.page}: ${page.text || '(metin bulunamadı)'}`).join('\n')
         : ''
@@ -1080,9 +1084,10 @@ function App() {
       if (!session) recordGuestPrompt()
     } catch (error) {
       setAiStatus('error')
+      setEditEngineStatus('warning')
       const isNetworkError = error instanceof TypeError && /fetch|network|failed/i.test(String(error.message || ''))
       const visibleError = isNetworkError
-        ? 'PDF çeviri sunucusuna ulaşılamadı. Lütfen birkaç saniye sonra tekrar dene; sorun devam ederse backend bağlantısını kontrol etmeliyiz.'
+        ? 'Document Edit motoruna ulaşılamadı. Lütfen birkaç saniye sonra tekrar dene; sorun devam ederse backend bağlantısını kontrol etmeliyiz.'
         : error.message || 'AI bağlantısı kurulamadı.'
       setMessages((current) => [
         ...current,
@@ -1134,7 +1139,6 @@ function App() {
         <div className="brand-lockup">
           <div className="brand-mark"><Sparkles size={17} strokeWidth={2.5} /></div>
           <span className="brand-name">update<span>MyPDF</span></span>
-          <span className="beta-pill">BETA</span>
         </div>
 
         <nav className="workspace-tabs" aria-label="Belge çalışma alanları">
@@ -1252,9 +1256,9 @@ function App() {
           <div className="chat-header">
             <div className="chat-title-wrap">
               <div className="ai-avatar"><Sparkles size={16} /></div>
-              <div><h1>AI assistant</h1><p><span className={`online-dot ${aiStatus === 'error' ? 'error' : ''}`} /> {aiStatus === 'live' ? 'Live AI connected' : aiStatus === 'error' ? 'Connection issue' : 'Ready to edit'}</p></div>
+              <div><h1>Document Edit Engine</h1><p><span className={`online-dot ${aiStatus === 'error' || editEngineStatus === 'warning' ? 'error' : ''}`} /> {editEngineStatus === 'reviewing' ? 'Azure visual review çalışıyor' : editEngineStatus === 'live' ? 'Azure · Quality · AI bağlı' : editEngineStatus === 'warning' ? 'Kalite motoru uyarısı' : aiStatus === 'live' ? 'AI bağlı · düzenlemeye hazır' : aiStatus === 'error' ? 'Bağlantı sorunu' : 'Azure · Quality · AI hazır'}</p></div>
             </div>
-            <button className="icon-button light" title="Sohbeti temizle" onClick={() => { setMessages(initialMessages); setAssistantQuestions([]); setAssistantProfile(null) }}><Trash2 size={16} /></button>
+            <div className="edit-engine-stack"><span>AZURE</span><span>QUALITY</span><span>AI</span><button className="icon-button light" title="Sohbeti temizle" onClick={() => { setMessages(initialMessages); setAssistantQuestions([]); setAssistantProfile(null); setEditEngineStatus('ready') }}><Trash2 size={16} /></button></div>
           </div>
 
           <div className="chat-body">
@@ -1276,7 +1280,7 @@ function App() {
           </div>
 
           <div className="suggestions">
-            <span className="suggestions-label">Try asking</span>
+            <span className="suggestions-label">Şunları deneyebilirsin</span>
             {starterPrompts.map(({ icon: Icon, label, prompt }) => (
               <button key={label} className="suggestion-chip" onClick={() => submitPrompt(prompt)}><Icon size={14} /> {label}</button>
             ))}
@@ -1289,7 +1293,7 @@ function App() {
                 value={input}
                 onChange={(event) => setInput(event.target.value)}
                 onKeyDown={(event) => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submitPrompt() } }}
-                placeholder="Ask AI to edit your PDF..."
+                placeholder="PDF’in için ne yapmamı istersin?"
                 rows={2}
               />
               <button className={`send-button ${input.trim() ? 'ready' : ''}`} onClick={() => submitPrompt()} disabled={!input.trim() || isThinking} title="Gönder">
@@ -1298,7 +1302,7 @@ function App() {
             </div>
             <div className="composer-meta">
               <button className="attach-image-button" type="button" onClick={() => imageInputRef.current?.click()}><ImagePlus size={12} /> {imageFile ? 'Görsel hazır' : 'Görsel ekle'}</button>
-              <span><MessageSquareText size={12} /> Enter to send</span><span>AI can make mistakes</span>
+              <span><MessageSquareText size={12} /> Enter gönderir</span><span>AI hata yapabilir</span>
             </div>
             <input ref={imageInputRef} type="file" accept="image/png,image/jpeg" hidden onChange={handleImageChange} />
           </div>
@@ -1359,7 +1363,6 @@ function TranslationWorkspace({ onOpenEditor }) {
   const [file, setFile] = useState(null)
   const [sourceLanguage, setSourceLanguage] = useState('auto')
   const [targetLanguage, setTargetLanguage] = useState('tr')
-  const [preserveLayout, setPreserveLayout] = useState(true)
   const [phase, setPhase] = useState('idle')
   const [job, setJob] = useState(null)
   const [resultUrl, setResultUrl] = useState('')
@@ -1440,7 +1443,6 @@ function TranslationWorkspace({ onOpenEditor }) {
       form.append('file', file)
       form.append('sourceLanguage', sourceLanguage)
       form.append('targetLanguage', targetLanguage)
-      form.append('preserveLayout', String(preserveLayout))
       const upload = await fetch(`${translationApiBaseUrl}/api/v1/uploads`, {
         method: 'POST',
         headers: { 'Idempotency-Key': crypto.randomUUID() },
@@ -1516,7 +1518,6 @@ function TranslationWorkspace({ onOpenEditor }) {
             <label><span>Kaynak dil</span><select value={sourceLanguage} onChange={(event) => setSourceLanguage(event.target.value)}><option value="auto">Otomatik algıla</option>{translationLanguages.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
             <label><span>Hedef dil</span><select value={targetLanguage} onChange={(event) => setTargetLanguage(event.target.value)}>{translationLanguages.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
           </div>
-          <label className="translation-check-row"><input type="checkbox" checked={preserveLayout} onChange={(event) => setPreserveLayout(event.target.checked)} /><span><strong>Görsel düzeni koru</strong><small>Metin kutuları, sayfa yapısı ve görseller kalite motoruyla kontrol edilir.</small></span><ShieldCheck size={16} /></label>
           {error && <div className="translation-error"><AlertTriangle size={15} /> <span>{error}</span></div>}
           <div className="translation-actions"><button type="button" className="translation-primary-button" onClick={startTranslation} disabled={!file || isBusy}>{isBusy ? <LoaderCircle className="spin" size={16} /> : <Languages size={16} />} {isBusy ? 'Motor çalışıyor…' : 'Çeviriyi başlat'} <ArrowRight size={15} /></button>{file && !isBusy && <button type="button" className="translation-reset-button" onClick={resetTranslation}>Temizle</button>}</div>
         </section>

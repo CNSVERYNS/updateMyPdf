@@ -104,7 +104,7 @@ const parseUpload = async (request: FastifyRequest, runtime: Runtime) => {
   const sourceLanguage = String(fields.sourceLanguage || 'auto').trim() || 'auto'
   const targetLanguage = String(fields.targetLanguage || 'tr').trim()
   if (!validLanguage(sourceLanguage) || !validLanguage(targetLanguage) || targetLanguage === 'auto') throw Object.assign(new Error('INVALID_LANGUAGE'), { statusCode: 400 })
-  return { fileName, extension, mimeType, bytes: file.bytes, sourceLanguage, targetLanguage, preserveLayout: fields.preserveLayout !== 'false', requestIdempotencyKey: String(request.headers['idempotency-key'] || '').trim() || undefined }
+  return { fileName, extension, mimeType, bytes: file.bytes, sourceLanguage, targetLanguage, requestIdempotencyKey: String(request.headers['idempotency-key'] || '').trim() || undefined }
 }
 
 const jobJson = (job: any) => ({ jobId: job.id, status: job.status, progress: job.progress, stage: job.currentStage, originalFileName: job.originalFileName, detectedMimeType: job.sourceMimeType, targetLanguage: job.targetLanguage, translationMode: job.translationMode, qualityScore: job.qualityScore, qualityWarnings: job.qualityWarnings, qualityReport: job.qualityReport, error: job.errorCode ? { code: job.errorCode, message: job.errorMessage, retryable: ['AZURE_RATE_LIMITED', 'UPLOAD_FAILED', 'RESULT_DOWNLOAD_FAILED'].includes(job.errorCode) } : null, createdAt: job.createdAt, updatedAt: job.updatedAt, completedAt: job.completedAt })

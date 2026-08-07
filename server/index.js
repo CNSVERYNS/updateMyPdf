@@ -34,6 +34,7 @@ const upload = multer({
   limits: { fileSize: 50 * 1024 * 1024 },
 })
 const pdfQualityServiceUrl = normalizeOrigin(process.env.PDF_QUALITY_SERVICE_URL || 'http://localhost:8000')
+const translationApiUrl = normalizeOrigin(process.env.TRANSLATION_API_URL)
 const adaptiveTextActionTypes = new Set(['translate', 'replace_text', 'rewrite_text', 'add_text', 'style_text', 'header_footer', 'watermark'])
 const structuralLayoutActionTypes = new Set(['delete_page', 'rotate_page', 'reorder_pages', 'duplicate_page', 'insert_blank_page', 'insert_page', 'crop_page', 'resize_page', 'extract_pages', 'portfolio'])
 
@@ -55,6 +56,19 @@ const adaptPdfTextLayout = async (sourceBytes, resultBytes, actions = []) => {
     return { bytes: Buffer.from(await response.arrayBuffer()), details, warning: null }
   } catch (error) {
     return { bytes: resultBytes, details: null, warning: `Adaptive text layout check skipped: ${error?.message || 'quality service unavailable'}` }
+  }
+}
+
+const runAzureVisualPreflight = async (sourceBytes) => {
+  if (!translationApiUrl) return { status: 'not_configured', strategySource: 'legacy-edit-api' }
+  try {
+    const form = new FormData()
+    form.append('file', new Blob([sourceBytes], { type: 'application/pdf' }), 'source.pdf')
+    const response = await fetch(`${translationApiUrl}/api/v1/visual-profile`, { method: 'POST', body: form, signal: AbortSignal.timeout(90000) })
+    if (!response.ok) return { status: 'unavailable', strategySource: 'legacy-edit-api', httpStatus: response.status }
+    return { status: 'completed', ...(await response.json()) }
+  } catch (error) {
+    return { status: 'unavailable', strategySource: 'legacy-edit-api', warning: error?.message || 'Azure visual preflight unavailable' }
   }
 }
 
@@ -2021,7 +2035,12 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
   }
 
   let reportAiCommandProgress = () => {}
+  let visualReview = null
   const executeAiCommand = async () => {
+    if (!translationMode) {
+      reportAiCommandProgress({ phase: 'visual_review', completedPages: 0, totalPages: 0, percent: 5 })
+      visualReview = await runAzureVisualPreflight(sourceFile.buffer)
+    }
     if (useGoogleDocumentTranslation) {
       const totalPages = preExtractedTranslationPageCount || preExtractedTranslationPages?.length || 0
       reportAiCommandProgress({ phase: 'translation', completedPages: 0, totalPages, percent: 5 })
@@ -2051,6 +2070,7 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
         sourceFile: sourceFile.originalname || 'document.pdf',
         tokenUsage,
         adaptiveLayout: adaptiveLayout.details,
+        visualReview,
       }
     }
     const client = getClient()
@@ -2074,6 +2094,10 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
     if (imageFile) content.push({
       type: 'input_image',
       image_url: `data:${imageFile.mimetype};base64,${imageFile.buffer.toString('base64')}`,
+    })
+    if (visualReview) content.push({
+      type: 'input_text',
+      text: `Cloud visual preflight from Azure quality engine. Use it as a conservative layout signal; never invent missing content: ${JSON.stringify(visualReview).slice(0, 24000)}`,
     })
     content.push({ type: 'input_text', text: prompt })
     const commandInstructions = translationMode
@@ -2294,6 +2318,7 @@ Automatically identify the source language from the extracted PDF text; the user
       sourceFile: sourceFile.originalname || 'document.pdf',
       tokenUsage,
       adaptiveLayout: adaptiveLayout.details,
+      visualReview,
     }
   }
 
