@@ -1146,7 +1146,7 @@ function App() {
           </button>
         </nav>
 
-        {session && file && <div className="document-name">
+        {workspaceMode === 'edit' && session && file && <div className="document-name">
           <FileText size={15} />
           <span>{documentTitle}</span>
           <span className={`saved-state ${saveState === 'saving' ? 'saving' : saveState === 'error' ? 'error' : ''}`}>{saveState === 'saving' ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />} {saveState === 'saving' ? 'Saving...' : saveState === 'error' ? 'Save failed' : 'Saved'}</span>

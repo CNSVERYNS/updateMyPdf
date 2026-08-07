@@ -6,15 +6,14 @@ updateMyPDF, mevcut PDF editörünün yanında PDF ve DOCX belgelerini Azure AI 
 
 ```mermaid
 flowchart LR
-  U[Browser / Next.js translation UI] --> N[n8n webhook]
-  U --> A[Fastify helper API]
+  U[Browser / Vite unified workspaces] --> A[Fastify translation API]
+  A --> N[n8n automation / operations]
   N --> A
   A --> DB[(PostgreSQL)]
   A --> B[(Private Azure Blob Storage)]
   A --> T[Azure AI Translator Document Translation]
   A --> Q[PyMuPDF quality service]
   N --> R[Redis-ready queue/locking]
-  E[Existing PDF editor / Vite] --> U
 ```
 
 Ana klasörler:
@@ -29,7 +28,7 @@ Ana klasörler:
 /docs                 Deployment ve operasyon notları
 ```
 
-Mevcut root Vite/Express PDF editörü korunur. `VITE_TRANSLATION_APP_URL` verilirse üst menüdeki **Belge çevir** bağlantısı yeni Next.js arayüzünü açar.
+Mevcut root Vite/Express uygulaması artık aynı üst menüde iki çalışma alanı sunar: **Doküman Çeviri** Azure + AI visual/quality motoruna, **Doküman Edit** mevcut PDF ve AI chat akışına bağlıdır. `apps/web` ayrı bir Next.js deneme arayüzü olarak korunur; ana `www` deployment'ı bu klasör değildir ve ikinci bir Vercel projesi gerektirmez.
 
 ## Gereksinimler
 

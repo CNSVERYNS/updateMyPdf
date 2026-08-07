@@ -33,11 +33,12 @@ For the current deployment:
 - `api` points to the Azure Container App custom domain.
 - Resend's SPF, DKIM and DMARC records are added separately at the domain registrar.
 
-The Next.js translation UI in `apps/web` is a deployable option, but it is not the
-primary `www` deployment. The existing Vite editor still uses its legacy API
-base URL until the `/api/pdf` and `/api/ai` compatibility path is migrated and
-tested against the Azure translation API. Do not replace the current Vercel
-environment variables with the Azure URL before that migration.
+The root Vite app now contains both the `Doküman Çeviri` and `Doküman Edit`
+workspaces. The translation workspace calls the Azure API directly through
+`VITE_TRANSLATION_API_BASE_URL` (defaulting to `https://api.updatemypdf.com`),
+while the edit workspace keeps its legacy `/api/pdf` and `/api/ai` API base until
+those routes are deliberately migrated. `apps/web` is retained as an optional
+standalone Next.js prototype, not as a second primary Vercel project.
 
 The exact Vercel and Azure target values must be copied from their respective dashboards; they are not hard-coded in this repository.
 
@@ -55,4 +56,4 @@ Provider cost snapshots and per-job usage estimates are shown separately so the 
 
 The local `.env` contains the required server-side configuration and is excluded from source control. The Azure resource group now contains the Translator, private Blob Storage containers, an ACR registry, a Container Apps environment, a private PDF quality app, and a public translation API app. The API health and readiness endpoints return HTTP 200 and report real Azure storage with translation mock mode disabled.
 
-The current Azure API hostname is `updatemypdf-api.graybay-8494ee2d.eastus.azurecontainerapps.io`. The DNS CNAME and `asuid.api` validation TXT record are configured, and the managed certificate is bound to `api.updatemypdf.com`. Both `https://api.updatemypdf.com/health` and `/ready` return HTTP 200. The existing `www.updatemypdf.com` record already points to the existing Vercel project, whose latest GitHub-triggered production deployment is Ready.
+The current Azure API hostname is `updatemypdf-api.graybay-8494ee2d.eastus.azurecontainerapps.io`. The DNS CNAME and `asuid.api` validation TXT record are configured, and the managed certificate is bound to `api.updatemypdf.com`. Both `https://api.updatemypdf.com/health` and `/ready` return HTTP 200. PDF jobs now run the visual profile/AI review before preserve-layout translation and include that result in the quality report. The existing `www.updatemypdf.com` record already points to the existing Vercel project, whose latest GitHub-triggered production deployment is Ready.
