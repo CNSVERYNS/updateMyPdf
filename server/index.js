@@ -33,6 +33,30 @@ const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 },
 })
+const pdfQualityServiceUrl = normalizeOrigin(process.env.PDF_QUALITY_SERVICE_URL || 'http://localhost:8000')
+const adaptiveTextActionTypes = new Set(['translate', 'replace_text', 'rewrite_text', 'add_text', 'style_text', 'header_footer', 'watermark'])
+const structuralLayoutActionTypes = new Set(['delete_page', 'rotate_page', 'reorder_pages', 'duplicate_page', 'insert_blank_page', 'insert_page', 'crop_page', 'resize_page', 'extract_pages', 'portfolio'])
+
+const shouldAdaptTextLayout = (actions = []) => {
+  const types = actions.map((action) => String(action?.type || ''))
+  return types.some((type) => adaptiveTextActionTypes.has(type)) && !types.some((type) => structuralLayoutActionTypes.has(type))
+}
+
+const adaptPdfTextLayout = async (sourceBytes, resultBytes, actions = []) => {
+  if (!shouldAdaptTextLayout(actions)) return { bytes: resultBytes, details: null, warning: null }
+  try {
+    const form = new FormData()
+    form.append('source', new Blob([sourceBytes], { type: 'application/pdf' }), 'source.pdf')
+    form.append('translated', new Blob([resultBytes], { type: 'application/pdf' }), 'edited.pdf')
+    const response = await fetch(`${pdfQualityServiceUrl}/adapt-text-layout`, { method: 'POST', body: form, signal: AbortSignal.timeout(30000) })
+    if (!response.ok) throw new Error(`PDF quality service returned ${response.status}`)
+    let details = null
+    try { details = JSON.parse(response.headers.get('x-adaptive-text-layout') || 'null') } catch { details = null }
+    return { bytes: Buffer.from(await response.arrayBuffer()), details, warning: null }
+  } catch (error) {
+    return { bytes: resultBytes, details: null, warning: `Adaptive text layout check skipped: ${error?.message || 'quality service unavailable'}` }
+  }
+}
 
 const getSupabaseAdmin = () => {
   const url = process.env.SUPABASE_URL
@@ -953,12 +977,14 @@ For a document request, first identify the user's outcome, audience, document ty
 Research policy: do not use web search during routine intake or for purely creative/personal documents. When the user asks for research, or when current/local rules materially affect a document, set researchNeeded true and use the web_search tool before drafting. Search only after enough facts and jurisdiction are known. Prefer primary government, regulator, court, official standards, or authoritative institutional sources; use current sources and compare sources when rules conflict. Never imply that a search result alone makes the document legally compliant. Put the most useful source URLs in researchSources and explain their role in why. If a source cannot be verified, say so and leave a review note.
 When the required facts are complete, return status draft_ready and write documentContent as a complete, polished, standalone document in the requested language. Harmonize the facts into natural clauses; never paste a raw fact list into the document. Use sensible headings, definitions, dates, payment or performance terms, responsibilities, exceptions, termination, dispute or governing-law terms only when relevant, signature blocks, and appendices when useful. For documents intended to be signed, always finish with a ## Signatures section; the PDF renderer will turn it into aligned signature cards. Do not include markdown fences. Use placeholders only for genuinely optional facts; list every placeholder in complianceNotes. Keep the chat reply warm and concise, for example: "Bilgileri birleştirdim; taslağı hazırladım." For documents with legal or regulated effect, complianceNotes must say that this is a draft, not legal advice, current rules and source applicability must be checked, and a qualified local professional should review it before reliance or signature. Never claim enforceability or guaranteed compliance.`
 
-const assistantModel = () => process.env.OPENAI_ASSISTANT_MODEL || 'gpt-5.6-luna'
+const DEFAULT_OPENAI_MODEL = 'gpt-5.1'
+const assistantModel = () => process.env.OPENAI_ASSISTANT_MODEL || process.env.OPENAI_MODEL || DEFAULT_OPENAI_MODEL
 const pdfEditorModel = () => {
   const configuredModel = String(process.env.OPENAI_MODEL || '').trim()
-  // Migrate the previous default automatically so an older Render env does not
-  // silently keep the expensive general model after the Luna rollout.
-  return !configuredModel || configuredModel === 'gpt-5.6' ? 'gpt-5.6-luna' : configuredModel
+  // Keep old invalid defaults from breaking production after deployment.
+  return !configuredModel || configuredModel === 'gpt-5.6' || configuredModel === 'gpt-5.6-luna'
+    ? DEFAULT_OPENAI_MODEL
+    : configuredModel
 }
 const translationModel = () => process.env.OPENAI_TRANSLATION_MODEL || pdfEditorModel()
 const assistantReasoning = () => process.env.OPENAI_ASSISTANT_REASONING || 'low'
@@ -1841,6 +1867,21 @@ const formatAiCommandError = (error) => {
 }
 
 const wait = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+const recordUsageEvent = async (event) => {
+  const usageApiUrl = String(process.env.TRANSLATION_API_URL || '').trim().replace(/\/$/, '')
+  const internalSecret = String(process.env.INTERNAL_API_SECRET || '').trim()
+  if (!usageApiUrl || !internalSecret) return
+  try {
+    await fetch(`${usageApiUrl}/api/v1/usage/events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-internal-api-secret': internalSecret },
+      body: JSON.stringify(event),
+      signal: AbortSignal.timeout(5000),
+    })
+  } catch (error) {
+    console.error('[usage-telemetry]', error?.message || error)
+  }
+}
 const isRetryableAiError = (error) => {
   const status = Number(error?.status || error?.statusCode || error?.response?.status || 0)
   if ([400, 401, 402, 403].includes(status)) return false
@@ -1904,6 +1945,7 @@ app.post('/api/ai/assistant', async (request, response) => {
         },
       },
     })
+    void recordUsageEvent({ provider: 'openai', service: 'responses', eventType: 'assistant_response', externalId: result?.id || null, idempotencyKey: result?.id ? `openai:${result.id}` : undefined, inputUnits: result?.usage?.input_tokens || null, outputUnits: result?.usage?.output_tokens || null, unitName: 'tokens', metadata: { model: assistantModel(), phase, likelyDraft, authenticated: Boolean(tokenContext) } })
     if (!result.output_text?.trim()) throw new Error('The document assistant returned an empty response.')
     const assistantResult = JSON.parse(result.output_text)
     const extractedSources = extractResponseSources(result)
@@ -1988,6 +2030,7 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
         targetLanguageCode: googleTargetLanguageCode,
         nativePdfOnly: googleNativePdfOnly,
       })
+      const adaptiveLayout = await adaptPdfTextLayout(sourceFile.buffer, translated.pdfBytes, [{ type: 'translate' }])
       reportAiCommandProgress({ phase: 'translation', completedPages: totalPages, totalPages, percent: 90 })
       const tokenUsage = await consumeAiTokens(tokenContext)
       reportAiCommandProgress({ phase: 'complete', completedPages: totalPages, totalPages, percent: 100 })
@@ -1995,9 +2038,9 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
         assistantMessage: `Belgenin tamamı ${targetLanguageHint} diline çevrildi; özgün PDF düzeni Google Document Translation ile korundu.`,
         summary: 'Belge çevirisi Google Document Translation ile uygulandı.',
         actions: [{ type: 'translate', page: null, text: 'complete PDF', replacement: `Translated to ${targetLanguageHint}` }],
-        editedPdf: translated.pdfBytes.toString('base64'),
+        editedPdf: adaptiveLayout.bytes.toString('base64'),
         appliedActions: [{ type: 'translate', applied: true, pageCount: totalPages, provider: 'google-document-translation', detectedLanguageCode: translated.detectedLanguageCode }],
-        warnings: [],
+        warnings: adaptiveLayout.warning ? [adaptiveLayout.warning] : adaptiveLayout.details?.shrinkPercent > 0 ? [`Adaptive text layout applied: ${adaptiveLayout.details.shrinkPercent}% global text reduction.`] : [],
         analysis: [],
         officeExports: [],
         imageExports: [],
@@ -2007,6 +2050,7 @@ app.post('/api/ai/command', upload.fields([{ name: 'file', maxCount: 1 }, { name
         model: 'google-document-translation',
         sourceFile: sourceFile.originalname || 'document.pdf',
         tokenUsage,
+        adaptiveLayout: adaptiveLayout.details,
       }
     }
     const client = getClient()
@@ -2057,6 +2101,7 @@ Automatically identify the source language from the extracted PDF text; the user
     let result = null
     if (!largeTranslation) {
       result = await client.responses.create(planRequest, { timeout: 180000 })
+      void recordUsageEvent({ provider: 'openai', service: 'responses', eventType: 'pdf_command_plan', externalId: result?.id || null, idempotencyKey: result?.id ? `openai:${result.id}` : undefined, inputUnits: result?.usage?.input_tokens || null, outputUnits: result?.usage?.output_tokens || null, unitName: 'tokens', metadata: { model: planRequest.model, translationMode, largeTranslation: false, authenticated: Boolean(tokenContext) } })
       if (!result.output_text?.trim()) throw new Error('The model returned an empty response.')
     }
     const normalizeTranslationPlan = (candidate) => {
@@ -2133,6 +2178,7 @@ Automatically identify the source language from the extracted PDF text; the user
           }],
           max_output_tokens: 16000,
         }, { timeout: 180000 })
+        void recordUsageEvent({ provider: 'openai', service: 'responses', eventType: 'pdf_translation_page', externalId: pageResult?.id || null, idempotencyKey: pageResult?.id ? `openai:${pageResult.id}` : undefined, inputUnits: pageResult?.usage?.input_tokens || null, outputUnits: pageResult?.usage?.output_tokens || null, unitName: 'tokens', metadata: { model: planRequest.model, page: page.page, authenticated: Boolean(tokenContext) } })
         if (!pageResult.output_text?.trim()) throw new Error(`Translation for page ${page.page} was empty.`)
         const pagePlan = JSON.parse(pageResult.output_text)
         const action = Array.isArray(pagePlan.actions) ? pagePlan.actions.find((candidate) => candidate?.type === 'translate') : null
@@ -2184,6 +2230,13 @@ Automatically identify the source language from the extracted PDF text; the user
     if (plan.actions.some((action) => action.type === 'portfolio')) {
       finalPdfBytes = await createPortfolioBuffer([{ buffer: finalPdfBytes, originalname: sourceFile.originalname || 'document.pdf', mimetype: 'application/pdf' }])
       appliedActions.push({ type: 'portfolio', applied: true, attachmentCount: 1 })
+    }
+    const adaptiveLayout = await adaptPdfTextLayout(editableSource, finalPdfBytes, plan.actions)
+    finalPdfBytes = adaptiveLayout.bytes
+    if (adaptiveLayout.warning) warnings.push(adaptiveLayout.warning)
+    if (adaptiveLayout.details?.shrinkPercent > 0) {
+      warnings.push(`Adaptive text layout applied: ${adaptiveLayout.details.shrinkPercent}% global text reduction.`)
+      appliedActions.push({ type: 'adaptive_text_layout', applied: true, shrinkPercent: adaptiveLayout.details.shrinkPercent, attempts: adaptiveLayout.details.attempts, selectedQualityScore: adaptiveLayout.details.selectedQualityScore })
     }
     const officeActions = plan.actions.filter((action) => ['export_word', 'export_excel', 'export_powerpoint'].includes(action.type) && action.format)
     const officeExports = await Promise.all(officeActions.map(async (action) => {
@@ -2240,6 +2293,7 @@ Automatically identify the source language from the extracted PDF text; the user
       model: pdfEditorModel(),
       sourceFile: sourceFile.originalname || 'document.pdf',
       tokenUsage,
+      adaptiveLayout: adaptiveLayout.details,
     }
   }
 

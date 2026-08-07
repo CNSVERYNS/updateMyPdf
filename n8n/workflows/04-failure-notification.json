@@ -1,0 +1,10 @@
+{
+  "name": "updateMyPDF - Translation Failure Notification",
+  "nodes": [
+    {"parameters":{},"id":"error-trigger","name":"Error Trigger","type":"n8n-nodes-base.errorTrigger","typeVersion":1,"position":[-280,0]},
+    {"parameters":{"jsCode":"const execution = $json.execution || {};\nreturn [{ json: { level: 'error', event: 'translation_workflow_failed', workflowId: $json.workflow?.id || null, executionId: execution.id || null, message: execution.error?.message || 'n8n workflow failed', jobId: execution.data?.jobId || null } }];"},"id":"normalize","name":"Normalize failure","type":"n8n-nodes-base.code","typeVersion":2,"position":[0,0]},
+    {"parameters":{"method":"POST","url":"={{ ($env.FAILURE_WEBHOOK_URL || 'http://api:4000/health') }}","sendHeaders":false,"options":{"timeout":15000}},"id":"notify","name":"Optional notification webhook","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[280,0]}
+  ],
+  "connections":{"Error Trigger":{"main":[[{"node":"Normalize failure","type":"main","index":0}]]},"Normalize failure":{"main":[[{"node":"Optional notification webhook","type":"main","index":0}]]}},
+  "active":false,"settings":{"executionOrder":"v1"},"versionId":"translation-failure-v1","meta":{"templateCredsSetupCompleted":false},"tags":[]
+}

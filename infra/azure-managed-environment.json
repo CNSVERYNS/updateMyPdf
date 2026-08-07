@@ -1,0 +1,8 @@
+{
+  "location": "eastus",
+  "properties": {
+    "appLogsConfiguration": {
+      "destination": "azure-monitor"
+    }
+  }
+}

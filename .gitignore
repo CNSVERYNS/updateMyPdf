@@ -1,5 +1,15 @@
 node_modules/
 dist/
+.next/
+apps/api/dist/
+apps/web/.next/
+apps/web/out/
+data/
+.test-translation-data/
 .env
 *.log
+__pycache__/
 tools/
+
+.vercel
+.env*

@@ -1,0 +1,12 @@
+{
+  "name": "updateMyPDF - Translation Status Poller",
+  "nodes": [
+    {"parameters":{"rule":{"interval":[{"field":"minutes","minutesInterval":1}]}},"id":"schedule","name":"Every minute","type":"n8n-nodes-base.scheduleTrigger","typeVersion":1.2,"position":[-640,0]},
+    {"parameters":{"method":"GET","url":"={{ ($env.TRANSLATION_API_URL || 'http://api:4000') + '/api/v1/jobs?active=true' }}","sendHeaders":true,"headerParameters":{"parameters":[{"name":"x-internal-api-secret","value":"={{ $env.INTERNAL_API_SECRET }}"}]},"options":{"timeout":60000}},"id":"active-jobs","name":"Get active jobs","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[-400,0]},
+    {"parameters":{"fieldToSplitOut":"jobs","options":{}},"id":"split","name":"One job at a time","type":"n8n-nodes-base.splitOut","typeVersion":1,"position":[-160,0]},
+    {"parameters":{"method":"POST","url":"={{ ($env.TRANSLATION_API_URL || 'http://api:4000') + '/api/v1/jobs/' + $json.jobId + '/poll' }}","sendHeaders":true,"headerParameters":{"parameters":[{"name":"x-internal-api-secret","value":"={{ $env.INTERNAL_API_SECRET }}"}]},"options":{"timeout":60000}},"id":"poll","name":"Poll Azure job","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[80,0]},
+    {"parameters":{"jsCode":"return items.map(item => ({ json: { event: 'translation_poll_completed', jobId: item.json.jobId, status: item.json.status, progress: item.json.progress } }));"},"id":"log","name":"Structured job log","type":"n8n-nodes-base.code","typeVersion":2,"position":[320,0]}
+  ],
+  "connections":{"Every minute":{"main":[[{"node":"Get active jobs","type":"main","index":0}]]},"Get active jobs":{"main":[[{"node":"One job at a time","type":"main","index":0}]]},"One job at a time":{"main":[[{"node":"Poll Azure job","type":"main","index":0}]]},"Poll Azure job":{"main":[[{"node":"Structured job log","type":"main","index":0}]]}},
+  "active":false,"settings":{"executionOrder":"v1"},"versionId":"translation-poller-v1","meta":{"templateCredsSetupCompleted":false},"tags":[]
+}

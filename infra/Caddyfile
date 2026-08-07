@@ -1,0 +1,11 @@
+{
+  email info@updatemypdf.com
+}
+
+updatemypdf.com, www.updatemypdf.com {
+  reverse_proxy web:3000
+}
+
+api.updatemypdf.com {
+  reverse_proxy api:4000
+}

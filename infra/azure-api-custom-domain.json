@@ -1,0 +1,15 @@
+{
+  "properties": {
+    "configuration": {
+      "ingress": {
+        "customDomains": [
+          {
+            "name": "api.updatemypdf.com",
+            "bindingType": "SniEnabled",
+            "certificateId": "/subscriptions/f712040d-2195-497d-b23a-31a5a98b9efb/resourceGroups/updatemypdf-rg/providers/Microsoft.App/managedEnvironments/updatemypdf-aca-env/managedCertificates/updatemypdf-api-cert"
+          }
+        ]
+      }
+    }
+  }
+}

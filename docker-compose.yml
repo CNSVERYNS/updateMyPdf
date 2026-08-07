@@ -1,0 +1,139 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: updatemypdf
+      POSTGRES_PASSWORD: local-development-only
+      POSTGRES_DB: updatemypdf
+    ports: ["5432:5432"]
+    volumes: ["postgres-data:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U updatemypdf -d updatemypdf"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    ports: ["6379:6379"]
+    volumes: ["redis-data:/data"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  pdf-quality:
+    build: ./services/pdf-quality
+    environment:
+      QUALITY_PASS_SCORE: "${QUALITY_PASS_SCORE:-90}"
+      QUALITY_WARNING_SCORE: "${QUALITY_WARNING_SCORE:-70}"
+      MIN_ACCEPTABLE_FONT_SIZE: "${MIN_ACCEPTABLE_FONT_SIZE:-5}"
+      MIN_TEXT_CHAR_RATIO: "${MIN_TEXT_CHAR_RATIO:-0.68}"
+      MIN_POSITION_COVERAGE: "${MIN_POSITION_COVERAGE:-0.98}"
+      VISUAL_REVIEW_SCALE: "${VISUAL_REVIEW_SCALE:-1.0}"
+      VISUAL_BACKGROUND_DELTA: "${VISUAL_BACKGROUND_DELTA:-0.08}"
+    ports: ["8000:8000"]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: ./apps/api
+    environment:
+      NODE_ENV: development
+      API_PORT: 4000
+      DATABASE_URL: postgresql://updatemypdf:local-development-only@postgres:5432/updatemypdf
+      TRANSLATION_MOCK: "${TRANSLATION_MOCK:-true}"
+      SYNC_TRANSLATION_ENABLED: "${SYNC_TRANSLATION_ENABLED:-false}"
+      AZURE_TRANSLATOR_ENDPOINT: "${AZURE_TRANSLATOR_ENDPOINT:-}"
+      AZURE_TRANSLATOR_KEY: "${AZURE_TRANSLATOR_KEY:-}"
+      AZURE_TRANSLATOR_REGION: "${AZURE_TRANSLATOR_REGION:-}"
+      AZURE_TRANSLATOR_API_VERSION: "${AZURE_TRANSLATOR_API_VERSION:-2026-03-01}"
+      AZURE_STORAGE_ACCOUNT_NAME: "${AZURE_STORAGE_ACCOUNT_NAME:-}"
+      AZURE_STORAGE_CONNECTION_STRING: "${AZURE_STORAGE_CONNECTION_STRING:-}"
+      AZURE_USE_ENTRA_ID: "${AZURE_USE_ENTRA_ID:-true}"
+      OPENAI_API_KEY: "${OPENAI_API_KEY:-}"
+      OPENAI_MODEL: "${OPENAI_MODEL:-gpt-5.6-luna}"
+      AI_VISUAL_REVIEW_ENABLED: "${AI_VISUAL_REVIEW_ENABLED:-true}"
+      AI_VISUAL_REVIEW_MAX_PAGES: "${AI_VISUAL_REVIEW_MAX_PAGES:-12}"
+      INTERNAL_API_SECRET: local-development-internal-secret-32-chars
+      DOWNLOAD_LINK_SECRET: local-development-download-secret-32
+      ADMIN_API_SECRET: "${ADMIN_API_SECRET:-}"
+      ADMIN_EMAILS: "${ADMIN_EMAILS:-}"
+      PDF_QUALITY_SERVICE_URL: http://pdf-quality:8000
+      STORAGE_ROOT: /app/data/translation
+      MAX_UPLOAD_SIZE_MB: 20
+      MAX_PDF_PAGES: 50
+      QUALITY_PASS_SCORE: "${QUALITY_PASS_SCORE:-90}"
+      QUALITY_WARNING_SCORE: "${QUALITY_WARNING_SCORE:-70}"
+    ports: ["4000:4000"]
+    volumes: ["translation-data:/app/data"]
+    depends_on:
+      postgres: { condition: service_healthy }
+      pdf-quality: { condition: service_healthy }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://localhost:4000/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+  n8n:
+    image: n8nio/n8n:latest
+    environment:
+      N8N_HOST: 0.0.0.0
+      N8N_PORT: 5678
+      N8N_PROTOCOL: http
+      N8N_SECURE_COOKIE: "false"
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: updatemypdf
+      DB_POSTGRESDB_USER: updatemypdf
+      DB_POSTGRESDB_PASSWORD: local-development-only
+      N8N_ENCRYPTION_KEY: local-development-encryption-key-change-me
+      EXECUTIONS_MODE: queue
+      QUEUE_BULL_REDIS_HOST: redis
+      QUEUE_BULL_REDIS_PORT: 6379
+    ports: ["5678:5678"]
+    volumes: ["n8n-data:/home/node/.n8n"]
+    depends_on:
+      postgres: { condition: service_healthy }
+
+  n8n-worker:
+    image: n8nio/n8n:latest
+    command: worker
+    environment:
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: postgres
+      DB_POSTGRESDB_PORT: 5432
+      DB_POSTGRESDB_DATABASE: updatemypdf
+      DB_POSTGRESDB_USER: updatemypdf
+      DB_POSTGRESDB_PASSWORD: local-development-only
+      N8N_ENCRYPTION_KEY: local-development-encryption-key-change-me
+      EXECUTIONS_MODE: queue
+      QUEUE_BULL_REDIS_HOST: redis
+      QUEUE_BULL_REDIS_PORT: 6379
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+
+  web:
+    build: ./apps/web
+    environment:
+      TRANSLATION_API_URL: http://api:4000
+      INTERNAL_API_SECRET: local-development-internal-secret-32-chars
+      ADMIN_API_SECRET: "${ADMIN_API_SECRET:-}"
+      ADMIN_DASHBOARD_SESSION_SECRET: "${ADMIN_DASHBOARD_SESSION_SECRET:-}"
+      NEXT_PUBLIC_EDITOR_URL: http://localhost:5173
+    ports: ["3000:3000"]
+    depends_on:
+      api: { condition: service_healthy }
+
+volumes:
+  postgres-data:
+  redis-data:
+  translation-data:
+  n8n-data:

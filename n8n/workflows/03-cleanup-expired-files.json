@@ -1,0 +1,10 @@
+{
+  "name": "updateMyPDF - Cleanup Expired Files",
+  "nodes": [
+    {"parameters":{"rule":{"interval":[{"field":"hours","hoursInterval":24}]}},"id":"schedule","name":"Daily cleanup","type":"n8n-nodes-base.scheduleTrigger","typeVersion":1.2,"position":[-420,0]},
+    {"parameters":{"method":"POST","url":"={{ ($env.TRANSLATION_API_URL || 'http://api:4000') + '/api/v1/cleanup' }}","sendHeaders":true,"headerParameters":{"parameters":[{"name":"x-internal-api-secret","value":"={{ $env.INTERNAL_API_SECRET }}"}]},"options":{"timeout":120000}},"id":"cleanup","name":"Delete expired source and output files","type":"n8n-nodes-base.httpRequest","typeVersion":4.2,"position":[-140,0]},
+    {"parameters":{"jsCode":"return [{ json: { event: 'translation_cleanup_completed', deletedJobCount: ($json.deleted || []).length } }];"},"id":"log","name":"Cleanup log","type":"n8n-nodes-base.code","typeVersion":2,"position":[140,0]}
+  ],
+  "connections":{"Daily cleanup":{"main":[[{"node":"Delete expired source and output files","type":"main","index":0}]]},"Delete expired source and output files":{"main":[[{"node":"Cleanup log","type":"main","index":0}]]}},
+  "active":false,"settings":{"executionOrder":"v1"},"versionId":"translation-cleanup-v1","meta":{"templateCredsSetupCompleted":false},"tags":[]
+}

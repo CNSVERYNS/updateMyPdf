@@ -1,0 +1,7 @@
+{
+  "location": "eastus",
+  "properties": {
+    "subjectName": "api.updatemypdf.com",
+    "domainControlValidation": "CNAME"
+  }
+}

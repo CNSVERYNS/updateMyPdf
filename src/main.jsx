@@ -1136,6 +1136,7 @@ function App() {
           <span className={`saved-state ${saveState === 'saving' ? 'saving' : saveState === 'error' ? 'error' : ''}`}>{saveState === 'saving' ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />} {saveState === 'saving' ? 'Saving...' : saveState === 'error' ? 'Save failed' : 'Saved'}</span>
         </div>}
 
+        {import.meta.env.VITE_TRANSLATION_APP_URL && <a className="translation-launch" href={import.meta.env.VITE_TRANSLATION_APP_URL} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Belge çevir</a>}
         <div className="top-actions">
           {session ? <>
             {tokenUsage && <button className={`token-balance ${tokenUsage.low ? 'low' : ''}`} title={`${tokenUsage.planName} planı · ${tokenUsage.remaining} AI tokenı kaldı`} onClick={() => tokenUsage.low ? setShowTokenReloadNudge(true) : setShowAccount(true)}>

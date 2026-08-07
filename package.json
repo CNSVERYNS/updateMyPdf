@@ -8,7 +8,10 @@
     "server": "node server/index.js",
     "dev:all": "npm run dev",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "translation:api": "npm --prefix apps/api run dev",
+    "translation:web": "npm --prefix apps/web run dev",
+    "translation:test": "npm --prefix apps/api test"
   },
   "dependencies": {
     "@napi-rs/canvas": "^1.0.3",

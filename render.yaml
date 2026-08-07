@@ -45,3 +45,7 @@ services:
         sync: false
       - key: PUBLIC_APP_ORIGIN
         sync: false
+      - key: TRANSLATION_API_URL
+        sync: false
+      - key: INTERNAL_API_SECRET
+        sync: false

@@ -1,0 +1,9 @@
+{
+  "location": "eastus",
+  "sku": {
+    "name": "Basic"
+  },
+  "properties": {
+    "adminUserEnabled": true
+  }
+}
