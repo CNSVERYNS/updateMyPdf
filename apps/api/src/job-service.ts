@@ -7,6 +7,7 @@ import type { StorageAdapter } from './storage.js'
 import type { DocumentTranslator } from './translator.js'
 import type { UsageRepository } from './usage.js'
 import { inspectQuality, repairVisualAssets } from './quality.js'
+import { profileVisualDocument } from './visual-review.js'
 import { assertTransition } from './domain.js'
 import { hashBytes, isEncryptedPdf, safeStorageName } from './security.js'
 
@@ -19,6 +20,7 @@ const pageCount = async (bytes: Buffer, extension: string) => {
 export class JobService {
   private readonly pollLocks = new Set<string>()
   private readonly preserveLocks = new Set<string>()
+  private readonly visualProfiles = new Map<string, Record<string, unknown>>()
   constructor(private readonly config: AppConfig, private readonly repo: JobRepository, private readonly storage: StorageAdapter, private readonly translator: DocumentTranslator, private readonly usage?: UsageRepository) {}
 
   async create(input: { fileName: string; mimeType: string; extension: string; bytes: Buffer; sourceLanguage?: string | null; targetLanguage: string; idempotencyKey?: string }) {
@@ -74,6 +76,10 @@ export class JobService {
     try {
       await this.repo.transition(job.id, 'translating', 'translation_started', 'Preserve-layout PDF translation in progress')
       const source = await this.storage.download(this.config.AZURE_STORAGE_SOURCE_CONTAINER, job.sourceBlobName!)
+      await this.repo.update(job.id, { currentStage: 'visual_review' })
+      const visualProfile = await profileVisualDocument(this.config, source, job.sourceExtension, async (event) => { await this.usage?.record(event) })
+      this.visualProfiles.set(job.id, visualProfile)
+      await this.repo.update(job.id, { currentStage: 'translation_started' })
       const result = await this.translator.translatePdfPreservingLayout({ bytes: source, sourceLanguage: job.sourceLanguage, targetLanguage: job.targetLanguage })
       await this.storage.upload(this.config.AZURE_STORAGE_TARGET_CONTAINER, job.targetBlobName!, result, job.sourceMimeType)
       await this.repo.recordFile({ jobId: job.id, role: 'target', blobName: job.targetBlobName!, mimeType: job.sourceMimeType, sizeBytes: result.length, sha256: hashBytes(result) })
@@ -128,8 +134,10 @@ export class JobService {
     if ((await this.repo.get(id))?.status === 'downloading') await this.repo.transition(id, 'quality_check', 'quality_check_started', 'Quality check started')
     const quality = await inspectQuality(this.config, source, result, job.sourceExtension)
     const status = quality.score >= this.config.QUALITY_PASS_SCORE ? 'completed' : quality.score >= this.config.QUALITY_WARNING_SCORE ? 'completed_with_warnings' : 'failed'
-    const updates: Partial<TranslationJob> = { resultSizeBytes: result.length, resultPageCount: quality.resultPageCount, qualityScore: quality.score, qualityWarnings: quality.warnings, qualityReport: quality.qualityLayers, progress: 100, completedAt: new Date().toISOString(), ...(status === 'failed' ? { errorCode: 'QUALITY_CHECK_FAILED', errorMessage: 'Çıktı kalite kontrolünden geçemedi.' } : {}) }
+    const visualProfile = this.visualProfiles.get(id)
+    const updates: Partial<TranslationJob> = { resultSizeBytes: result.length, resultPageCount: quality.resultPageCount, qualityScore: quality.score, qualityWarnings: quality.warnings, qualityReport: { ...quality.qualityLayers, visualReview: visualProfile || { status: 'not_run' } }, progress: 100, completedAt: new Date().toISOString(), ...(status === 'failed' ? { errorCode: 'QUALITY_CHECK_FAILED', errorMessage: 'Çıktı kalite kontrolünden geçemedi.' } : {}) }
     await this.repo.update(id, updates)
+    this.visualProfiles.delete(id)
     await this.repo.transition(id, status, 'quality_check_completed', status === 'completed' ? 'Translation completed' : status === 'completed_with_warnings' ? 'Translation completed with warnings' : 'Quality check failed')
     try {
       await this.usage?.record({

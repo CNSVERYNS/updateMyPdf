@@ -2,8 +2,11 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import {
   ArrowLeft,
+  ArrowRight,
   ArrowUp,
+  AlertTriangle,
   Bell,
+  CheckCircle2,
   Bot,
   Check,
   ChevronDown,
@@ -13,11 +16,13 @@ import {
   ExternalLink,
   FilePlus2,
   FileText,
+  FolderOpen,
   History,
   Highlighter,
   ImagePlus,
   Link2,
   LoaderCircle,
+  Languages,
   KeyRound,
   LogIn,
   LogOut,
@@ -42,6 +47,7 @@ import { supabase, supabaseConfigured } from './supabase'
 import './styles.css'
 
 const apiBaseUrl = String(import.meta.env.VITE_API_BASE_URL || '').replace(/\/$/, '')
+const translationApiBaseUrl = String(import.meta.env.VITE_TRANSLATION_API_BASE_URL || 'https://api.updatemypdf.com').replace(/\/$/, '')
 let supabaseRefreshPromise = null
 const refreshSupabaseSession = async () => {
   if (!supabase) return null
@@ -208,6 +214,7 @@ const exportMimeTypes = {
 
 function App() {
   const [persistedAssistantState] = useState(readAssistantPersistence)
+  const [workspaceMode, setWorkspaceMode] = useState('edit')
   const [file, setFile] = useState(null)
   const [originalFile, setOriginalFile] = useState(null)
   const [pdfTitle, setPdfTitle] = useState('')
@@ -1130,13 +1137,21 @@ function App() {
           <span className="beta-pill">BETA</span>
         </div>
 
+        <nav className="workspace-tabs" aria-label="Belge çalışma alanları">
+          <button type="button" className={`workspace-tab ${workspaceMode === 'translate' ? 'active' : ''}`} onClick={() => setWorkspaceMode('translate')}>
+            <Languages size={15} /> <span>Doküman Çeviri</span>
+          </button>
+          <button type="button" className={`workspace-tab ${workspaceMode === 'edit' ? 'active' : ''}`} onClick={() => setWorkspaceMode('edit')}>
+            <PenLine size={15} /> <span>Doküman Edit</span>
+          </button>
+        </nav>
+
         {session && file && <div className="document-name">
           <FileText size={15} />
           <span>{documentTitle}</span>
           <span className={`saved-state ${saveState === 'saving' ? 'saving' : saveState === 'error' ? 'error' : ''}`}>{saveState === 'saving' ? <LoaderCircle className="spin" size={13} /> : <Check size={13} />} {saveState === 'saving' ? 'Saving...' : saveState === 'error' ? 'Save failed' : 'Saved'}</span>
         </div>}
 
-        {import.meta.env.VITE_TRANSLATION_APP_URL && <a className="translation-launch" href={import.meta.env.VITE_TRANSLATION_APP_URL} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Belge çevir</a>}
         <div className="top-actions">
           {session ? <>
             {tokenUsage && <button className={`token-balance ${tokenUsage.low ? 'low' : ''}`} title={`${tokenUsage.planName} planı · ${tokenUsage.remaining} AI tokenı kaldı`} onClick={() => tokenUsage.low ? setShowTokenReloadNudge(true) : setShowAccount(true)}>
@@ -1174,7 +1189,7 @@ function App() {
         </div>
       </header>
 
-      <main className="workspace">
+      {workspaceMode === 'translate' ? <TranslationWorkspace onOpenEditor={() => setWorkspaceMode('edit')} /> : <main className="workspace">
         <section className="viewer-panel">
           <div className="viewer-toolbar">
             <div className="tool-group">
@@ -1288,7 +1303,7 @@ function App() {
             <input ref={imageInputRef} type="file" accept="image/png,image/jpeg" hidden onChange={handleImageChange} />
           </div>
         </section>
-      </main>
+      </main>}
 
       {showHistory && <HistoryDrawer notifications={notifications} readNotificationIds={readNotificationIds} unreadCount={unreadNotificationCount} changes={changes} onNotificationOpen={openNotification} onClose={() => setShowHistory(false)} />}
       {showComparison && <ComparisonDrawer comparison={comparison} onClose={() => setShowComparison(false)} />}
@@ -1322,6 +1337,207 @@ function DemoDocument({ change, style }) {
       {change?.badge === 'Özet' && <div className="summary-card"><Sparkles size={13} /><span><b>AI summary</b> Product clarity and user needs are the central themes of this document.</span></div>}
       <div className="doc-footer"><span>ACME STUDIO</span><span>01</span></div>
     </div>
+  )
+}
+
+const translationStatusLabels = {
+  idle: 'Motor hazır',
+  uploading: 'Dosya güvenli alana yükleniyor',
+  starting: 'Belge yaklaşımı seçiliyor',
+  processing: 'Azure + AI motoru çalışıyor',
+  completed: 'Belge hazır',
+  warning: 'Belge hazır · uyarıları kontrol et',
+  failed: 'İşlem tamamlanamadı',
+}
+
+const translationLanguages = [
+  ['tr', 'Türkçe'], ['en', 'İngilizce'], ['es', 'İspanyolca'], ['de', 'Almanca'],
+  ['fr', 'Fransızca'], ['it', 'İtalyanca'], ['pt', 'Portekizce'], ['nl', 'Hollandaca'],
+]
+
+function TranslationWorkspace({ onOpenEditor }) {
+  const [file, setFile] = useState(null)
+  const [sourceLanguage, setSourceLanguage] = useState('auto')
+  const [targetLanguage, setTargetLanguage] = useState('tr')
+  const [preserveLayout, setPreserveLayout] = useState(true)
+  const [phase, setPhase] = useState('idle')
+  const [job, setJob] = useState(null)
+  const [resultUrl, setResultUrl] = useState('')
+  const [error, setError] = useState('')
+  const [isDragging, setIsDragging] = useState(false)
+  const [downloadBusy, setDownloadBusy] = useState(false)
+  const inputRef = useRef(null)
+  const pollTimerRef = useRef(null)
+
+  const isBusy = ['uploading', 'starting', 'processing'].includes(phase)
+  const statusLabel = translationStatusLabels[phase] || translationStatusLabels.idle
+  const progress = Math.max(0, Math.min(100, Number(job?.progress || (phase === 'starting' ? 8 : 0))))
+
+  useEffect(() => () => window.clearTimeout(pollTimerRef.current), [])
+
+  const readApiError = async (response, fallback) => {
+    const payload = await response.json().catch(() => null)
+    return payload?.error?.message || payload?.error || fallback
+  }
+
+  const resetTranslation = () => {
+    window.clearTimeout(pollTimerRef.current)
+    setFile(null)
+    setJob(null)
+    setResultUrl('')
+    setError('')
+    setPhase('idle')
+  }
+
+  const chooseFile = (nextFile) => {
+    if (!nextFile) return
+    const allowed = /\.(pdf|docx)$/i.test(nextFile.name)
+    if (!allowed) {
+      setError('Şimdilik yalnızca PDF ve DOCX belgeleri çevrilebilir.')
+      return
+    }
+    if (nextFile.size > 20 * 1024 * 1024) {
+      setError('Dosya boyutu 20 MB sınırını aşmamalı.')
+      return
+    }
+    setFile(nextFile)
+    setJob(null)
+    setResultUrl('')
+    setError('')
+    setPhase('idle')
+  }
+
+  const finishWithDownloadLink = async (jobId) => {
+    const response = await fetch(`${translationApiBaseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}/download-link`)
+    if (!response.ok) throw new Error(await readApiError(response, 'Çeviri sonucu için indirme bağlantısı alınamadı.'))
+    const payload = await response.json()
+    setResultUrl(payload.downloadUrl || '')
+  }
+
+  const pollJob = async (jobId) => {
+    const response = await fetch(`${translationApiBaseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}`)
+    if (!response.ok) throw new Error(await readApiError(response, 'Belge durumu okunamadı.'))
+    const nextJob = await response.json()
+    setJob(nextJob)
+    if (nextJob.status === 'completed' || nextJob.status === 'completed_with_warnings') {
+      await finishWithDownloadLink(jobId)
+      setPhase(nextJob.status === 'completed_with_warnings' ? 'warning' : 'completed')
+      return
+    }
+    if (nextJob.status === 'failed') throw new Error(nextJob.error?.message || 'Belge motoru bu dosyayı tamamlayamadı.')
+    pollTimerRef.current = window.setTimeout(() => pollJob(jobId).catch((pollError) => { setError(pollError.message); setPhase('failed') }), 2500)
+  }
+
+  const startTranslation = async () => {
+    if (!file || isBusy) return
+    window.clearTimeout(pollTimerRef.current)
+    setError('')
+    setJob(null)
+    setResultUrl('')
+    try {
+      setPhase('uploading')
+      const form = new FormData()
+      form.append('file', file)
+      form.append('sourceLanguage', sourceLanguage)
+      form.append('targetLanguage', targetLanguage)
+      form.append('preserveLayout', String(preserveLayout))
+      const upload = await fetch(`${translationApiBaseUrl}/api/v1/uploads`, {
+        method: 'POST',
+        headers: { 'Idempotency-Key': crypto.randomUUID() },
+        body: form,
+      })
+      if (!upload.ok) throw new Error(await readApiError(upload, 'Belge yüklenemedi.'))
+      const uploadData = await upload.json()
+      setJob({ jobId: uploadData.jobId, status: uploadData.status || 'uploaded', progress: 5, originalFileName: file.name })
+      setPhase('starting')
+      const start = await fetch(`${translationApiBaseUrl}/api/v1/jobs/${encodeURIComponent(uploadData.jobId)}/start`, { method: 'POST' })
+      if (!start.ok) throw new Error(await readApiError(start, 'Belge işleme başlatılamadı.'))
+      setPhase('processing')
+      await pollJob(uploadData.jobId)
+    } catch (startError) {
+      setError(startError.message || 'Belge işlenemedi.')
+      setPhase('failed')
+    }
+  }
+
+  const downloadResult = async () => {
+    if (!resultUrl || downloadBusy) return
+    setDownloadBusy(true)
+    try {
+      const response = await fetch(resultUrl)
+      if (!response.ok) throw new Error('Sonuç dosyası indirilemedi.')
+      const blob = await response.blob()
+      const url = URL.createObjectURL(blob)
+      const link = document.createElement('a')
+      link.href = url
+      link.download = `translated-${file?.name || 'document.pdf'}`
+      document.body.appendChild(link)
+      link.click()
+      link.remove()
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000)
+    } catch (downloadError) {
+      setError(downloadError.message || 'Dosya indirilemedi.')
+    } finally {
+      setDownloadBusy(false)
+    }
+  }
+
+  return (
+    <main className="translation-workspace">
+      <div className="translation-background-orbit orbit-one" aria-hidden="true" />
+      <div className="translation-background-orbit orbit-two" aria-hidden="true" />
+      <div className="translation-floating-file floating-file-one" aria-hidden="true"><FileText size={18} /></div>
+      <div className="translation-floating-file floating-file-two" aria-hidden="true"><FolderOpen size={19} /></div>
+      <section className="translation-hero">
+        <div>
+          <span className="translation-eyebrow"><Sparkles size={13} /> SMART DOCUMENT ENGINE</span>
+          <h1>Belgenin dilini değiştir,<br /><em>karakterini koru.</em></h1>
+          <p>Her dosya aynı yöntemle işlenmez. Motor önce belgeyi okur, doğru çeviri yaklaşımını seçer, ardından görsel ve kalite kontrolleriyle temiz bir çıktı üretir.</p>
+        </div>
+        <div className="translation-engine-badge">
+          <div className="engine-pulse"><CheckCircle2 size={20} /></div>
+          <strong>Motor hazır</strong>
+          <span>Azure Translator · AI visual review · PDF quality</span>
+        </div>
+      </section>
+
+      <div className="translation-layout-grid">
+        <section className="translation-card translation-upload-card">
+          <div className="translation-card-heading">
+            <div><span className="translation-card-kicker">01 / SOURCE DOCUMENT</span><h2>Çevrilecek belgeyi bırak</h2></div>
+            <div className="translation-card-icon"><Upload size={18} /></div>
+          </div>
+          <button type="button" className={`translation-dropzone ${isDragging ? 'dragging' : ''} ${file ? 'has-file' : ''}`} onClick={() => inputRef.current?.click()} onDragOver={(event) => { event.preventDefault(); setIsDragging(true) }} onDragLeave={() => setIsDragging(false)} onDrop={(event) => { event.preventDefault(); setIsDragging(false); chooseFile(event.dataTransfer.files?.[0]) }}>
+            {file ? <><div className="translation-file-icon"><FileText size={25} /></div><strong>{file.name}</strong><span>{(file.size / 1024 / 1024).toFixed(2)} MB · İşleme hazır</span><small>Değiştirmek için başka dosya seç</small></> : <><div className="translation-file-icon"><FolderOpen size={25} /></div><strong>PDF veya DOCX yükle</strong><span>Dosyayı sürükle veya cihazından seç</span><small>Özel alan · 20 MB’a kadar</small></>}
+          </button>
+          <input ref={inputRef} type="file" accept="application/pdf,.pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,.docx" hidden onChange={(event) => chooseFile(event.target.files?.[0])} />
+
+          <div className="translation-options">
+            <label><span>Kaynak dil</span><select value={sourceLanguage} onChange={(event) => setSourceLanguage(event.target.value)}><option value="auto">Otomatik algıla</option>{translationLanguages.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+            <label><span>Hedef dil</span><select value={targetLanguage} onChange={(event) => setTargetLanguage(event.target.value)}>{translationLanguages.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
+          </div>
+          <label className="translation-check-row"><input type="checkbox" checked={preserveLayout} onChange={(event) => setPreserveLayout(event.target.checked)} /><span><strong>Görsel düzeni koru</strong><small>Metin kutuları, sayfa yapısı ve görseller kalite motoruyla kontrol edilir.</small></span><ShieldCheck size={16} /></label>
+          {error && <div className="translation-error"><AlertTriangle size={15} /> <span>{error}</span></div>}
+          <div className="translation-actions"><button type="button" className="translation-primary-button" onClick={startTranslation} disabled={!file || isBusy}>{isBusy ? <LoaderCircle className="spin" size={16} /> : <Languages size={16} />} {isBusy ? 'Motor çalışıyor…' : 'Çeviriyi başlat'} <ArrowRight size={15} /></button>{file && !isBusy && <button type="button" className="translation-reset-button" onClick={resetTranslation}>Temizle</button>}</div>
+        </section>
+
+        <aside className="translation-side-stack">
+          <section className="translation-card translation-pipeline-card">
+            <div className="translation-card-heading compact"><div><span className="translation-card-kicker">02 / ENGINE PIPELINE</span><h2>Belgenin arka planı</h2></div><div className="translation-card-icon soft"><Bot size={18} /></div></div>
+            <div className="translation-pipeline"><div className={`pipeline-step ${phase !== 'idle' ? 'active' : ''}`}><span>01</span><div><strong>Belgeyi tanı</strong><small>Dosya tipi ve yapı analizi</small></div></div><div className={`pipeline-step ${['starting', 'processing', 'completed', 'warning'].includes(phase) ? 'active' : ''}`}><span>02</span><div><strong>Doğru yaklaşımı seç</strong><small>PDF preserve-layout veya Azure batch</small></div></div><div className={`pipeline-step ${['processing', 'completed', 'warning'].includes(phase) ? 'active' : ''}`}><span>03</span><div><strong>Çevir ve görsel kontrol et</strong><small>Azure + AI visual + quality service</small></div></div><div className={`pipeline-step ${['completed', 'warning'].includes(phase) ? 'active' : ''}`}><span>04</span><div><strong>Spotless çıktı hazırla</strong><small>İndirilebilir, kısa ömürlü bağlantı</small></div></div></div>
+          </section>
+          <section className={`translation-card translation-status-card ${phase === 'failed' ? 'failed' : phase === 'completed' || phase === 'warning' ? 'done' : ''}`}>
+            <div className="translation-status-top"><span className="translation-card-kicker">03 / LIVE STATUS</span><span className="translation-status-dot" /></div>
+            <h2>{statusLabel}</h2>
+            <p>{phase === 'idle' ? 'Bir belge seçtiğinde burada dosyanın hangi motor katmanında olduğunu göreceksin.' : phase === 'completed' || phase === 'warning' ? `${job?.qualityScore != null ? `Kalite skoru ${job.qualityScore}/100. ` : ''}${job?.qualityWarnings?.length ? 'Çıktıda kontrol edilmesi gereken uyarılar var.' : 'Belge temiz bir sonuç olarak hazır.'}` : phase === 'failed' ? 'Dosyanı veya dil seçeneklerini kontrol edip tekrar deneyebilirsin.' : (job?.stage || 'Belge katmanları sırayla işleniyor.')}</p>
+            {phase !== 'idle' && phase !== 'failed' && <div className="translation-progress"><div><span>İlerleme</span><strong>{progress}%</strong></div><div className="translation-progress-track"><span style={{ width: `${progress}%` }} /></div></div>}
+            {resultUrl && <button type="button" className="translation-download-button" onClick={downloadResult} disabled={downloadBusy}>{downloadBusy ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />} {downloadBusy ? 'Hazırlanıyor…' : 'Çevrilmiş belgeyi indir'}</button>}
+          </section>
+        </aside>
+      </div>
+
+      <footer className="translation-footer-note"><span><ShieldCheck size={14} /> Dosyalar geçici ve güvenli Azure alanında tutulur.</span><button type="button" onClick={onOpenEditor}>AI chat ile belge düzenle <ArrowRight size={13} /></button></footer>
+    </main>
   )
 }
 
@@ -1566,7 +1782,7 @@ function CloudFilesDrawer({ files, signatureRequests, onClose, onOpen, onDelete,
         <div><span>UPDATEMYPDF WORKSPACE</span><h2>Dosya merkezi</h2></div>
         <button className="icon-button light" onClick={onClose}><X size={17} /></button>
       </div>
-      <div className="workspace-tabs">
+      <div className="cloud-workspace-tabs">
         <button className={tab === 'all' ? 'active' : ''} onClick={() => setTab('all')}>Tüm dosyalar <span>{allFiles.length}</span></button>
         <button className={tab === 'signed' ? 'active' : ''} onClick={() => setTab('signed')}>İmzalanan <span>{signedFiles.length + signedRequests.length}</span></button>
         <button className={tab === 'pending' ? 'active' : ''} onClick={() => setTab('pending')}>İmza bekleyen <span>{pendingRequests.length}</span></button>

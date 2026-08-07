@@ -1,0 +1,51 @@
+{
+  "properties": {
+    "template": {
+      "containers": [
+        {
+          "name": "api",
+          "image": "updatemypdfacr.azurecr.io/api:visual-review",
+          "resources": {
+            "cpu": 1,
+            "memory": "2Gi"
+          },
+          "env": [
+            { "name": "NODE_ENV", "value": "production" },
+            { "name": "API_PORT", "value": "4000" },
+            { "name": "DATABASE_URL", "secretRef": "database-url" },
+            { "name": "INTERNAL_API_SECRET", "secretRef": "internal-api-secret" },
+            { "name": "DOWNLOAD_LINK_SECRET", "secretRef": "download-link-secret" },
+            { "name": "ADMIN_API_SECRET", "secretRef": "admin-api-secret" },
+            { "name": "CORS_ORIGINS", "value": "https://www.updatemypdf.com,https://updatemypdf.com,https://translate.updatemypdf.com" },
+            { "name": "AZURE_TRANSLATOR_ENDPOINT", "value": "https://updatemypdf-translator.cognitiveservices.azure.com" },
+            { "name": "AZURE_TRANSLATOR_KEY", "secretRef": "azure-translator-key" },
+            { "name": "AZURE_STORAGE_ACCOUNT_NAME", "value": "updatemypdf6768" },
+            { "name": "AZURE_STORAGE_CONNECTION_STRING", "secretRef": "azure-storage-connection-string" },
+            { "name": "AZURE_USE_ENTRA_ID", "value": "false" },
+            { "name": "AZURE_STORAGE_SOURCE_CONTAINER", "value": "translation-source" },
+            { "name": "AZURE_STORAGE_TARGET_CONTAINER", "value": "translation-target" },
+            { "name": "AZURE_STORAGE_QUARANTINE_CONTAINER", "value": "translation-quarantine" },
+            { "name": "TRANSLATION_MOCK", "value": "false" },
+            { "name": "SYNC_TRANSLATION_ENABLED", "value": "true" },
+            { "name": "PDF_QUALITY_SERVICE_URL", "value": "https://updatemypdf-quality.internal.graybay-8494ee2d.eastus.azurecontainerapps.io" },
+            { "name": "OPENAI_API_KEY", "secretRef": "openai-api-key" },
+            { "name": "OPENAI_MODEL", "value": "gpt-5.1" },
+            { "name": "AI_VISUAL_REVIEW_ENABLED", "value": "true" },
+            { "name": "AI_VISUAL_REVIEW_MAX_PAGES", "value": "12" },
+            { "name": "QUALITY_PASS_SCORE", "value": "90" },
+            { "name": "QUALITY_WARNING_SCORE", "value": "70" },
+            { "name": "MIN_ACCEPTABLE_FONT_SIZE", "value": "5" },
+            { "name": "MIN_TEXT_CHAR_RATIO", "value": "0.68" },
+            { "name": "MIN_POSITION_COVERAGE", "value": "0.98" },
+            { "name": "VISUAL_REVIEW_SCALE", "value": "1.0" },
+            { "name": "VISUAL_BACKGROUND_DELTA", "value": "0.08" }
+          ],
+          "probes": [
+            { "type": "Liveness", "httpGet": { "path": "/health", "port": 4000 }, "initialDelaySeconds": 20, "periodSeconds": 30 },
+            { "type": "Readiness", "httpGet": { "path": "/ready", "port": 4000 }, "initialDelaySeconds": 20, "periodSeconds": 30 }
+          ]
+        }
+      ]
+    }
+  }
+}
