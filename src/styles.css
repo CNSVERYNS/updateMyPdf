@@ -498,3 +498,25 @@ body { background: var(--paper-wash); }
 .app-seo-footer { display: flex; justify-content: space-between; gap: 24px; padding: 22px clamp(18px, 5vw, 70px) 30px; border-top: 1px solid var(--green-line); color: #718078; background: #f8fdf9; font-size: 10px; }
 .app-seo-footer > div { display: grid; gap: 4px; }.app-seo-footer strong { color: var(--green-ink); font-family: Manrope, sans-serif; }.app-seo-footer nav { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px 14px; }.app-seo-footer a { color: #267b57; text-decoration: none; }.app-seo-footer a:hover { color: #164f3a; text-decoration: underline; }
 @media (max-width: 700px) { .app-seo-footer { display: grid; }.app-seo-footer nav { justify-content: flex-start; } }
+.workspace-tabs .workspace-tab > span {
+  display: inline;
+  min-width: 0;
+  height: auto;
+  margin-left: 0;
+  border-radius: 0;
+  color: inherit;
+  background: transparent;
+  font-size: inherit;
+}
+.translation-live-steps { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 2px 0 14px; }
+.translation-live-step { display: grid; justify-items: center; gap: 5px; min-width: 0; color: #aaa4a2; text-align: center; }
+.translation-live-step > span { display: grid; width: 23px; height: 23px; place-items: center; border: 1px solid #e4d9d4; border-radius: 50%; color: #aaa4a2; background: #fffdfc; font-family: 'DM Mono', monospace; font-size: 8px; transition: .25s ease; }
+.translation-live-step small { overflow: hidden; color: inherit; font-size: 8px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.translation-live-step.active { color: #4d555d; }
+.translation-live-step.active > span { border-color: #23845b; color: #fff; background: #23845b; box-shadow: 0 0 0 5px rgba(47,154,108,.1); animation: translation-step-pulse 1.8s infinite; }
+.translation-live-step.complete { color: #267b57; }
+.translation-live-step.complete > span { border-color: #2f9a6c; color: #fff; background: #2f9a6c; }
+.translation-progress-track span { position: relative; overflow: hidden; transition: width .8s ease; }
+.translation-progress-track span::after { position: absolute; inset: 0 auto 0 -45%; width: 45%; content: ''; background: linear-gradient(90deg, transparent, rgba(255,255,255,.45), transparent); animation: translation-shimmer 1.5s infinite; }
+@keyframes translation-step-pulse { 50% { box-shadow: 0 0 0 8px rgba(47,154,108,.03); } }
+@keyframes translation-shimmer { to { left: 110%; } }

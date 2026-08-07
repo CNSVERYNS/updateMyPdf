@@ -74,9 +74,14 @@ class AzureTranslator implements DocumentTranslator {
   }
 
   private async qualityServiceRequest(pathname: string, form: FormData) {
-    const response = await fetch(`${this.config.PDF_QUALITY_SERVICE_URL.replace(/\/$/, '')}${pathname}`, { method: 'POST', body: form, signal: AbortSignal.timeout(Math.min(this.config.AZURE_REQUEST_TIMEOUT_MS, 30000)) })
-    if (!response.ok) throw new Error(`PDF preserve service ${response.status}`)
-    return response
+    try {
+      const response = await fetch(`${this.config.PDF_QUALITY_SERVICE_URL.replace(/\/$/, '')}${pathname}`, { method: 'POST', body: form, signal: AbortSignal.timeout(Math.min(this.config.AZURE_REQUEST_TIMEOUT_MS, 30000)) })
+      if (!response.ok) throw Object.assign(new Error(`PDF preserve service ${response.status}`), { code: 'PDF_PRESERVE_SERVICE_FAILED', status: response.status })
+      return response
+    } catch (error) {
+      if ((error as any)?.code === 'PDF_PRESERVE_SERVICE_FAILED') throw error
+      throw Object.assign(new Error('PDF preserve service unavailable'), { code: 'PDF_PRESERVE_SERVICE_FAILED', cause: error })
+    }
   }
 
   private async translateTextBatch(texts: string[], sourceLanguage: string | null | undefined, targetLanguage: string) {
@@ -95,6 +100,7 @@ class AzureTranslator implements DocumentTranslator {
     extractForm.append('source', new Blob([documentPart], { type: 'application/pdf' }), 'source.pdf')
     const extracted = await this.qualityServiceRequest('/extract-layout', extractForm)
     const blocks = (await extracted.json() as { blocks?: PdfLayoutBlock[] }).blocks || []
+    if (!blocks.length) throw new Error('PDF_NO_EXTRACTABLE_TEXT')
     const translations: Array<{ id: string; text: string }> = []
     let unchangedSubstantiveBlocks = 0
     for (let offset = 0; offset < blocks.length;) {

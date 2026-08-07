@@ -95,7 +95,7 @@ const initialMessages = [
   {
     id: 1,
     role: 'assistant',
-    text: 'Merhaba! Ben updateMyPDF Document Edit Engine. Azure visual review, kalite kontrolü ve AI birlikte çalışır; PDF’ini yükle ve neyi değiştirmemi istediğini yaz.',
+    text: 'Merhaba! PDF’ini yükle ve neyi değiştirmemi istediğini yaz. Belgeni inceleyip düzenlemeyi hazırlayacağım.',
   },
 ]
 
@@ -1144,7 +1144,7 @@ function App() {
       const officeNotice = officeExports.length ? `\nOffice çıktısı indirildi: ${officeExports.map((officeFile) => officeFile.fileName).join(', ')}` : ''
       const imageNotice = imageExports.length ? `\nGörsel çıktıları indirildi: ${imageExports.map((imageFileExport) => imageFileExport.fileName).join(', ')}` : ''
       const audioNotice = data.audioOverview?.data ? '\nAudio overview indirildi.' : ''
-      const visualNotice = data.visualReview?.status === 'completed' ? `\n\nAzure visual preflight tamamlandı: ${data.visualReview.documentStrategy || 'belgeye uygun yaklaşım'} seçildi.` : data.visualReview?.status === 'unavailable' ? '\n\nAzure visual preflight geçici olarak kullanılamadı; mevcut kalite kontrolüyle devam edildi.' : ''
+      const visualNotice = data.visualReview?.status === 'completed' ? `\n\nBelgenin görsel kontrolü tamamlandı: ${data.visualReview.documentStrategy || 'belgeye uygun yaklaşım'} seçildi.` : data.visualReview?.status === 'unavailable' ? '\n\nBelgenin görsel kontrolü geçici olarak tamamlanamadı; mevcut kalite kontrolüyle devam edildi.' : ''
       const warningText = `${data.warnings?.length ? ` ${data.warnings.join(' ')}` : ''}${analysisNotice}${officeNotice}${imageNotice}${audioNotice}${visualNotice}${cloudSaveWarning}`
       const ocrText = data.ocrPages?.length
         ? data.ocrPages.map((page) => `Sayfa ${page.page}: ${page.text || '(metin bulunamadı)'}`).join('\n')
@@ -1161,7 +1161,7 @@ function App() {
         : `${data.assistantMessage}${warningText}`
       const change = {
         id: Date.now(),
-        title: appliedCount ? 'PDF düzenlemesi uygulandı' : 'AI düzenleme planı hazır',
+        title: appliedCount ? 'PDF düzenlemesi uygulandı' : 'Düzenleme planı hazır',
         description: responseText,
         badge: actionLabel,
         detail: `${appliedCount} değişiklik uygulandı. ${data.summary}`,
@@ -1179,7 +1179,7 @@ function App() {
       const isNetworkError = error instanceof TypeError && /fetch|network|failed/i.test(String(error.message || ''))
       const visibleError = isNetworkError
         ? 'Document Edit motoruna ulaşılamadı. Lütfen birkaç saniye sonra tekrar dene; sorun devam ederse backend bağlantısını kontrol etmeliyiz.'
-        : error.message || 'AI bağlantısı kurulamadı.'
+        : error.message || 'Otomatik düzenleme bağlantısı kurulamadı.'
       setMessages((current) => [
         ...current,
         { id: Date.now() + 1, role: 'assistant', text: visibleError },
@@ -1349,9 +1349,9 @@ function App() {
           <div className="chat-header">
             <div className="chat-title-wrap">
               <div className="ai-avatar"><Sparkles size={16} /></div>
-              <div><h1>Document Edit Engine</h1><p><span className={`online-dot ${aiStatus === 'error' || editEngineStatus === 'warning' ? 'error' : ''}`} /> {editEngineStatus === 'reviewing' ? 'Azure visual review çalışıyor' : editEngineStatus === 'live' ? 'Azure · Quality · AI bağlı' : editEngineStatus === 'warning' ? 'Kalite motoru uyarısı' : aiStatus === 'live' ? 'AI bağlı · düzenlemeye hazır' : aiStatus === 'error' ? 'Bağlantı sorunu' : 'Azure · Quality · AI hazır'}</p></div>
+              <div><h1>Doküman Düzenleme</h1><p><span className={`online-dot ${aiStatus === 'error' || editEngineStatus === 'warning' ? 'error' : ''}`} /> {editEngineStatus === 'reviewing' ? 'Belge kontrol ediliyor' : editEngineStatus === 'live' ? 'Belge düzenlemeye hazır' : editEngineStatus === 'warning' ? 'Kontrol notları var' : aiStatus === 'live' ? 'Düzenlemeye hazır' : aiStatus === 'error' ? 'Bağlantı sorunu' : 'Düzenleme hazır'}</p></div>
             </div>
-            <div className="edit-engine-stack"><span>AZURE</span><span>QUALITY</span><span>AI</span><button className="icon-button light" title="Sohbeti temizle" onClick={() => { setMessages(initialMessages); setAssistantQuestions([]); setAssistantProfile(null); setEditEngineStatus('ready') }}><Trash2 size={16} /></button></div>
+            <div className="edit-engine-stack"><span>HAZIR</span><button className="icon-button light" title="Sohbeti temizle" onClick={() => { setMessages(initialMessages); setAssistantQuestions([]); setAssistantProfile(null); setEditEngineStatus('ready') }}><Trash2 size={16} /></button></div>
           </div>
 
           <div className="chat-body">
@@ -1395,7 +1395,7 @@ function App() {
             </div>
             <div className="composer-meta">
               <button className="attach-image-button" type="button" onClick={() => imageInputRef.current?.click()}><ImagePlus size={12} /> {imageFile ? 'Görsel hazır' : 'Görsel ekle'}</button>
-              <span><MessageSquareText size={12} /> Enter gönderir</span><span>AI hata yapabilir</span>
+              <span><MessageSquareText size={12} /> Enter gönderir</span><span>Otomatik düzenleme hata yapabilir</span>
             </div>
             <input ref={imageInputRef} type="file" accept="image/png,image/jpeg" hidden onChange={handleImageChange} />
           </div>
@@ -1403,7 +1403,7 @@ function App() {
       </main>}
 
       <footer className="app-seo-footer">
-        <div><strong>updateMyPDF</strong><span>AI PDF çeviri, düzenleme ve görsel kalite kontrolü.</span></div>
+        <div><strong>updateMyPDF</strong><span>PDF çeviri, düzenleme ve görsel kalite kontrolü.</span></div>
         <nav aria-label="Dil rehberleri"><a href="/tr/">Türkçe PDF rehberi</a><a href="/en/">PDF translation guide</a><a href="/es/">Guía de traducción PDF</a><a href="/de/">PDF-Übersetzung</a><a href="/fr/">Guide PDF</a><a href="/it/">Guida PDF</a><a href="/pt/">Guia PDF</a><a href="/nl/">PDF-gids</a></nav>
       </footer>
 
@@ -1436,21 +1436,43 @@ function DemoDocument({ change, style }) {
         <div><span className="doc-number">01</span><strong>Start with the user</strong><p className={highlighted ? 'highlighted' : ''}>Great products begin with a clear understanding of the people they serve.</p></div>
         <div><span className="doc-number">02</span><strong>Make it obvious</strong><p className={highlighted ? 'highlighted' : ''}>Every interaction should feel simple, intentional and easy to understand.</p></div>
       </div>
-      {change?.badge === 'Özet' && <div className="summary-card"><Sparkles size={13} /><span><b>AI summary</b> Product clarity and user needs are the central themes of this document.</span></div>}
+      {change?.badge === 'Özet' && <div className="summary-card"><Sparkles size={13} /><span><b>Kısa özet</b> Product clarity and user needs are the central themes of this document.</span></div>}
       <div className="doc-footer"><span>ACME STUDIO</span><span>01</span></div>
     </div>
   )
 }
 
 const translationStatusLabels = {
-  idle: 'Motor hazır',
-  uploading: 'Dosya güvenli alana yükleniyor',
-  starting: 'Belge yaklaşımı seçiliyor',
-  processing: 'Azure + AI motoru çalışıyor',
+  idle: 'Çeviri hazır',
+  uploading: 'Belge yükleniyor',
+  starting: 'Belge hazırlanıyor',
+  processing: 'Belge çevriliyor',
   completed: 'Belge hazır',
-  warning: 'Belge hazır · uyarıları kontrol et',
+  warning: 'Belge hazır · son notları kontrol et',
   failed: 'İşlem tamamlanamadı',
 }
+
+const translationStageLabels = {
+  received: 'Belge alındı',
+  validating: 'Belge analiz ediliyor',
+  uploaded: 'Belge hazırlanıyor',
+  submitted: 'Çeviri başlatılıyor',
+  visual_review: 'Sayfa düzeni inceleniyor',
+  translating: 'Metin çevriliyor',
+  translation_started: 'Metin çevriliyor',
+  downloading: 'Son belge hazırlanıyor',
+  quality_check: 'Son kontroller yapılıyor',
+  completed: 'Belge hazır',
+  completed_with_warnings: 'Belge hazır · son notları kontrol et',
+  failed: 'İşlem tamamlanamadı',
+}
+
+const translationSteps = [
+  { key: 'analysis', label: 'Belgeyi analiz et' },
+  { key: 'translation', label: 'Metni çevir' },
+  { key: 'preparing', label: 'Belgeyi hazırla' },
+  { key: 'done', label: 'Tamamlandı' },
+]
 
 const translationLanguages = [
   ['tr', 'Türkçe'], ['en', 'İngilizce'], ['es', 'İspanyolca'], ['de', 'Almanca'],
@@ -1472,7 +1494,18 @@ function TranslationWorkspace({ onOpenEditor }) {
 
   const isBusy = ['uploading', 'starting', 'processing'].includes(phase)
   const statusLabel = translationStatusLabels[phase] || translationStatusLabels.idle
-  const progress = Math.max(0, Math.min(100, Number(job?.progress || (phase === 'starting' ? 8 : 0))))
+  const jobStage = job?.stage || (phase === 'uploading' ? 'validating' : phase === 'starting' ? 'submitted' : phase)
+  const stageLabel = translationStageLabels[jobStage] || statusLabel
+  const progress = Math.max(0, Math.min(100, Number(job?.progress ?? (phase === 'starting' ? 8 : 0))))
+  const activeStep = ['received', 'validating', 'uploaded', 'submitted', 'visual_review'].includes(jobStage)
+    ? 0
+    : ['translating', 'translation_started'].includes(jobStage)
+    ? 1
+    : ['downloading', 'quality_check'].includes(jobStage)
+    ? 2
+    : ['completed', 'completed_with_warnings'].includes(jobStage)
+    ? 3
+    : 0
 
   useEffect(() => () => window.clearTimeout(pollTimerRef.current), [])
 
@@ -1515,8 +1548,25 @@ function TranslationWorkspace({ onOpenEditor }) {
     setResultUrl(payload.downloadUrl || '')
   }
 
+  const fetchJob = async (jobId, retryCount = 0) => {
+    try {
+      const response = await fetch(`${translationApiBaseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}`)
+      if (response.ok || response.status < 500 || retryCount >= 8) return response
+      await new Promise((resolve) => window.setTimeout(resolve, retryCount > 2 ? 5000 : 2500))
+      return fetchJob(jobId, retryCount + 1)
+    } catch (error) {
+      if (retryCount >= 8) throw error
+      await new Promise((resolve) => window.setTimeout(resolve, retryCount > 2 ? 5000 : 2500))
+      return fetchJob(jobId, retryCount + 1)
+    }
+  }
+
+  const schedulePoll = (jobId) => {
+    pollTimerRef.current = window.setTimeout(() => pollJob(jobId).catch((pollError) => { setError(pollError.message); setPhase('failed') }), 2500)
+  }
+
   const pollJob = async (jobId) => {
-    const response = await fetch(`${translationApiBaseUrl}/api/v1/jobs/${encodeURIComponent(jobId)}`)
+    const response = await fetchJob(jobId)
     if (!response.ok) throw new Error(await readApiError(response, 'Belge durumu okunamadı.'))
     const nextJob = await response.json()
     setJob(nextJob)
@@ -1526,7 +1576,7 @@ function TranslationWorkspace({ onOpenEditor }) {
       return
     }
     if (nextJob.status === 'failed') throw new Error(nextJob.error?.message || 'Belge motoru bu dosyayı tamamlayamadı.')
-    pollTimerRef.current = window.setTimeout(() => pollJob(jobId).catch((pollError) => { setError(pollError.message); setPhase('failed') }), 2500)
+    schedulePoll(jobId)
   }
 
   const startTranslation = async () => {
@@ -1552,6 +1602,8 @@ function TranslationWorkspace({ onOpenEditor }) {
       setPhase('starting')
       const start = await fetch(`${translationApiBaseUrl}/api/v1/jobs/${encodeURIComponent(uploadData.jobId)}/start`, { method: 'POST' })
       if (!start.ok) throw new Error(await readApiError(start, 'Belge işleme başlatılamadı.'))
+      const startData = await start.json().catch(() => ({}))
+      setJob((current) => current ? { ...current, status: startData.status || 'submitted', stage: startData.status || 'submitted', progress: Math.max(Number(current.progress) || 0, 10), translationMode: startData.translationMode } : current)
       setPhase('processing')
       await pollJob(uploadData.jobId)
     } catch (startError) {
@@ -1590,14 +1642,14 @@ function TranslationWorkspace({ onOpenEditor }) {
       <div className="translation-floating-file floating-file-two" aria-hidden="true"><FolderOpen size={19} /></div>
       <section className="translation-hero">
         <div>
-          <span className="translation-eyebrow"><Sparkles size={13} /> SMART DOCUMENT ENGINE</span>
+          <span className="translation-eyebrow"><Sparkles size={13} /> BELGE ÇEVİRİSİ</span>
           <h1>Belgenin dilini değiştir,<br /><em>karakterini koru.</em></h1>
           <p>Her dosya aynı yöntemle işlenmez. Motor önce belgeyi okur, doğru çeviri yaklaşımını seçer, ardından görsel ve kalite kontrolleriyle temiz bir çıktı üretir.</p>
         </div>
         <div className="translation-engine-badge">
           <div className="engine-pulse"><CheckCircle2 size={20} /></div>
           <strong>Motor hazır</strong>
-          <span>Azure Translator · AI visual review · PDF quality</span>
+          <span>Belgeyi analiz eder, çevirir ve düzenini kontrol eder</span>
         </div>
       </section>
 
@@ -1617,25 +1669,26 @@ function TranslationWorkspace({ onOpenEditor }) {
             <label><span>Hedef dil</span><select value={targetLanguage} onChange={(event) => setTargetLanguage(event.target.value)}>{translationLanguages.map(([value, label]) => <option value={value} key={value}>{label}</option>)}</select></label>
           </div>
           {error && <div className="translation-error"><AlertTriangle size={15} /> <span>{error}</span></div>}
-          <div className="translation-actions"><button type="button" className="translation-primary-button" onClick={startTranslation} disabled={!file || isBusy}>{isBusy ? <LoaderCircle className="spin" size={16} /> : <Languages size={16} />} {isBusy ? 'Motor çalışıyor…' : 'Çeviriyi başlat'} <ArrowRight size={15} /></button>{file && !isBusy && <button type="button" className="translation-reset-button" onClick={resetTranslation}>Temizle</button>}</div>
+          <div className="translation-actions"><button type="button" className="translation-primary-button" onClick={startTranslation} disabled={!file || isBusy}>{isBusy ? <LoaderCircle className="spin" size={16} /> : <Languages size={16} />} {isBusy ? 'Belge işleniyor…' : 'Çeviriyi başlat'} <ArrowRight size={15} /></button>{file && !isBusy && <button type="button" className="translation-reset-button" onClick={resetTranslation}>Temizle</button>}</div>
         </section>
 
         <aside className="translation-side-stack">
           <section className="translation-card translation-pipeline-card">
-            <div className="translation-card-heading compact"><div><span className="translation-card-kicker">02 / ENGINE PIPELINE</span><h2>Belgenin arka planı</h2></div><div className="translation-card-icon soft"><Bot size={18} /></div></div>
-            <div className="translation-pipeline"><div className={`pipeline-step ${phase !== 'idle' ? 'active' : ''}`}><span>01</span><div><strong>Belgeyi tanı</strong><small>Dosya tipi ve yapı analizi</small></div></div><div className={`pipeline-step ${['starting', 'processing', 'completed', 'warning'].includes(phase) ? 'active' : ''}`}><span>02</span><div><strong>Doğru yaklaşımı seç</strong><small>PDF preserve-layout veya Azure batch</small></div></div><div className={`pipeline-step ${['processing', 'completed', 'warning'].includes(phase) ? 'active' : ''}`}><span>03</span><div><strong>Çevir ve görsel kontrol et</strong><small>Azure + AI visual + quality service</small></div></div><div className={`pipeline-step ${['completed', 'warning'].includes(phase) ? 'active' : ''}`}><span>04</span><div><strong>Spotless çıktı hazırla</strong><small>İndirilebilir, kısa ömürlü bağlantı</small></div></div></div>
+            <div className="translation-card-heading compact"><div><span className="translation-card-kicker">02 / ÇALIŞMA ADIMLARI</span><h2>Belgenin arka planı</h2></div><div className="translation-card-icon soft"><Bot size={18} /></div></div>
+            <div className="translation-pipeline"><div className={`pipeline-step ${phase !== 'idle' ? 'active' : ''}`}><span>01</span><div><strong>Belgeyi analiz et</strong><small>Dosya tipi ve sayfa yapısı</small></div></div><div className={`pipeline-step ${['starting', 'processing', 'completed', 'warning'].includes(phase) ? 'active' : ''}`}><span>02</span><div><strong>Metni çevir</strong><small>Cümleler ve metin alanları</small></div></div><div className={`pipeline-step ${['processing', 'completed', 'warning'].includes(phase) ? 'active' : ''}`}><span>03</span><div><strong>Belgeyi kontrol et</strong><small>Sayfa düzeni ve okunabilirlik</small></div></div><div className={`pipeline-step ${['completed', 'warning'].includes(phase) ? 'active' : ''}`}><span>04</span><div><strong>Çıktıyı hazırla</strong><small>İndirilebilir son belge</small></div></div></div>
           </section>
           <section className={`translation-card translation-status-card ${phase === 'failed' ? 'failed' : phase === 'completed' || phase === 'warning' ? 'done' : ''}`}>
-            <div className="translation-status-top"><span className="translation-card-kicker">03 / LIVE STATUS</span><span className="translation-status-dot" /></div>
+            <div className="translation-status-top"><span className="translation-card-kicker">03 / CANLI DURUM</span><span className="translation-status-dot" /></div>
             <h2>{statusLabel}</h2>
-            <p>{phase === 'idle' ? 'Bir belge seçtiğinde burada dosyanın hangi motor katmanında olduğunu göreceksin.' : phase === 'completed' || phase === 'warning' ? `${job?.qualityScore != null ? `Kalite skoru ${job.qualityScore}/100. ` : ''}${job?.qualityWarnings?.length ? 'Çıktıda kontrol edilmesi gereken uyarılar var.' : 'Belge temiz bir sonuç olarak hazır.'}` : phase === 'failed' ? 'Dosyanı veya dil seçeneklerini kontrol edip tekrar deneyebilirsin.' : (job?.stage || 'Belge katmanları sırayla işleniyor.')}</p>
+            <p>{phase === 'idle' ? 'Bir belge seçtiğinde burada işlem adımlarını göreceksin.' : phase === 'completed' || phase === 'warning' ? `${job?.qualityScore != null ? `Kalite skoru ${job.qualityScore}/100. ` : ''}${job?.qualityWarnings?.length ? 'Çıktıda kontrol edilmesi gereken notlar var.' : 'Belge temiz bir sonuç olarak hazır.'}` : phase === 'failed' ? (job?.error?.message || error || 'Belge işlenirken bir sorun oluştu.') : stageLabel}</p>
+            {phase !== 'idle' && <div className="translation-live-steps" aria-label="Çeviri aşamaları">{translationSteps.map((step, index) => <div className={`translation-live-step ${index < activeStep ? 'complete' : index === activeStep ? 'active' : ''}`} key={step.key}><span>{index < activeStep ? '✓' : index + 1}</span><small>{step.label}</small></div>)}</div>}
             {phase !== 'idle' && phase !== 'failed' && <div className="translation-progress"><div><span>İlerleme</span><strong>{progress}%</strong></div><div className="translation-progress-track"><span style={{ width: `${progress}%` }} /></div></div>}
             {resultUrl && <button type="button" className="translation-download-button" onClick={downloadResult} disabled={downloadBusy}>{downloadBusy ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />} {downloadBusy ? 'Hazırlanıyor…' : 'Çevrilmiş belgeyi indir'}</button>}
           </section>
         </aside>
       </div>
 
-      <footer className="translation-footer-note"><span><ShieldCheck size={14} /> Dosyalar geçici ve güvenli Azure alanında tutulur.</span><button type="button" onClick={onOpenEditor}>AI chat ile belge düzenle <ArrowRight size={13} /></button></footer>
+      <footer className="translation-footer-note"><span><ShieldCheck size={14} /> Dosyalar geçici ve güvenli alanda tutulur.</span><button type="button" onClick={onOpenEditor}>Belgeyi sohbetle düzenle <ArrowRight size={13} /></button></footer>
     </main>
   )
 }

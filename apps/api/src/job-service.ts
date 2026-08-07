@@ -52,11 +52,13 @@ export class JobService {
     await this.repo.update(id, { translationMode: usePreservePdf ? 'preserve_pdf' : useSync ? 'sync' : 'batch', progress: 10 })
     if (usePreservePdf) {
       await this.repo.transition(id, 'submitted', 'translation_submitted', 'Preserve-layout PDF translation submitted')
+      await this.repo.update(id, { progress: 15 })
       void this.runPreservePdf(job)
       return (await this.repo.get(id))!
     }
     if (useSync) {
       await this.repo.transition(id, 'submitted', 'translation_submitted', 'Synchronous translation submitted')
+      await this.repo.update(id, { progress: 15 })
       void this.runSync(job)
       return (await this.repo.get(id))!
     }
@@ -75,24 +77,53 @@ export class JobService {
     this.preserveLocks.add(job.id)
     try {
       await this.repo.transition(job.id, 'translating', 'translation_started', 'Preserve-layout PDF translation in progress')
+      await this.repo.update(job.id, { progress: 22 })
       const source = await this.storage.download(this.config.AZURE_STORAGE_SOURCE_CONTAINER, job.sourceBlobName!)
-      await this.repo.update(job.id, { currentStage: 'visual_review' })
+      await this.repo.update(job.id, { currentStage: 'visual_review', progress: 30 })
       const visualProfile = await profileVisualDocument(this.config, source, job.sourceExtension, async (event) => { await this.usage?.record(event) })
       this.visualProfiles.set(job.id, visualProfile)
-      await this.repo.update(job.id, { currentStage: 'translation_started' })
+      await this.repo.update(job.id, { currentStage: 'translation_started', progress: 45 })
       const result = await this.translator.translatePdfPreservingLayout({ bytes: source, sourceLanguage: job.sourceLanguage, targetLanguage: job.targetLanguage })
+      await this.repo.update(job.id, { currentStage: 'downloading', progress: 82 })
       await this.storage.upload(this.config.AZURE_STORAGE_TARGET_CONTAINER, job.targetBlobName!, result, job.sourceMimeType)
       await this.repo.recordFile({ jobId: job.id, role: 'target', blobName: job.targetBlobName!, mimeType: job.sourceMimeType, sizeBytes: result.length, sha256: hashBytes(result) })
       await this.finish(job.id, source, result)
-    } catch (error) { await this.fail(job.id, error) } finally { this.preserveLocks.delete(job.id) }
+    } catch (error) {
+      if (this.shouldFallbackToBatch(error)) {
+        try {
+          await this.submitBatchFallback(job)
+          return
+        } catch (fallbackError) {
+          await this.fail(job.id, fallbackError)
+          return
+        }
+      }
+      await this.fail(job.id, error)
+    } finally { this.preserveLocks.delete(job.id) }
+  }
+
+  private shouldFallbackToBatch(error: unknown) {
+    const code = String((error as any)?.code || (error as any)?.message || '')
+    return ['PDF_NO_EXTRACTABLE_TEXT', 'PDF_TRANSLATION_EMPTY_BLOCK', 'PDF_TRANSLATION_INCOMPLETE', 'PDF_TRANSLATION_RENDER_INCOMPLETE', 'PDF_PRESERVE_SERVICE_FAILED'].some((value) => code.startsWith(value))
+  }
+
+  private async submitBatchFallback(job: TranslationJob) {
+    const current = await this.mustGet(job.id)
+    if (current.azureOperationId || !['submitted', 'translating'].includes(current.status)) return
+    const sourceUrl = await this.storage.createReadSas(this.config.AZURE_STORAGE_SOURCE_CONTAINER, current.sourceBlobName!, this.config.SOURCE_SAS_TTL_MINUTES)
+    const targetUrl = await this.storage.createTargetSas(this.config.AZURE_STORAGE_TARGET_CONTAINER, current.targetBlobName!, this.config.TARGET_SAS_TTL_MINUTES)
+    const operation = await this.translator.submitBatch({ sourceUrl, targetUrl, sourceLanguage: current.sourceLanguage, targetLanguage: current.targetLanguage, sourceBlobName: current.sourceBlobName!, targetBlobName: current.targetBlobName!, sourceContainer: this.config.AZURE_STORAGE_SOURCE_CONTAINER, targetContainer: this.config.AZURE_STORAGE_TARGET_CONTAINER, mimeType: current.sourceMimeType })
+    await this.repo.update(current.id, { translationMode: 'batch', azureOperationId: operation.operationId, azureOperationUrl: operation.operationUrl, currentStage: 'translation_submitted', progress: Math.max(current.progress, 28) })
   }
 
   private async runSync(job: TranslationJob) {
     try {
       await this.repo.transition(job.id, 'translating', 'translation_started', 'Synchronous translation in progress')
+      await this.repo.update(job.id, { progress: 35 })
       const source = await this.storage.download(this.config.AZURE_STORAGE_SOURCE_CONTAINER, job.sourceBlobName!)
       const translated = await this.translator.translateSync({ bytes: source, fileName: job.originalFileName, mimeType: job.sourceMimeType, sourceLanguage: job.sourceLanguage, targetLanguage: job.targetLanguage })
       const result = await repairVisualAssets(this.config, source, translated, job.sourceExtension)
+      await this.repo.update(job.id, { currentStage: 'downloading', progress: 82 })
       await this.storage.upload(this.config.AZURE_STORAGE_TARGET_CONTAINER, job.targetBlobName!, result, job.sourceMimeType)
       await this.repo.recordFile({ jobId: job.id, role: 'target', blobName: job.targetBlobName!, mimeType: job.sourceMimeType, sizeBytes: result.length, sha256: hashBytes(result) })
       await this.finish(job.id, source, result)
@@ -110,12 +141,18 @@ export class JobService {
     }
     if (!job.azureOperationId || !['submitted', 'translating'].includes(job.status)) return job
     try {
-      if (job.status === 'submitted') await this.repo.transition(id, 'translating', 'translation_started', 'Batch translation in progress')
+      if (job.status === 'submitted') {
+        await this.repo.transition(id, 'translating', 'translation_started', 'Batch translation in progress')
+        await this.repo.update(id, { progress: Math.max(job.progress, 22) })
+      }
       const status = await this.translator.getStatus(job.azureOperationId)
-      await this.repo.update(id, { progress: Math.max(job.progress, status.progress) })
+      const providerProgress = Number(status.progress) || 0
+      const translatingProgress = status.status === 'Succeeded' ? 84 : Math.max(25, providerProgress)
+      await this.repo.update(id, { progress: Math.max(job.progress, translatingProgress) })
       if (status.status === 'Failed' || status.status === 'ValidationFailed' || status.status === 'Cancelled') throw Object.assign(new Error(status.errorMessage || 'Azure translation failed'), { code: status.errorCode || 'AZURE_TRANSLATION_FAILED' })
       if (status.status !== 'Succeeded') return (await this.repo.get(id))!
       await this.repo.transition(id, 'downloading', 'result_download_started', 'Translated result download started')
+      await this.repo.update(id, { progress: 88 })
       const source = await this.storage.download(this.config.AZURE_STORAGE_SOURCE_CONTAINER, job.sourceBlobName!)
       const sourceUrl = await this.storage.createReadSas(this.config.AZURE_STORAGE_SOURCE_CONTAINER, job.sourceBlobName!, this.config.SOURCE_SAS_TTL_MINUTES)
       const targetUrl = await this.storage.createTargetSas(this.config.AZURE_STORAGE_TARGET_CONTAINER, job.targetBlobName!, this.config.TARGET_SAS_TTL_MINUTES)
@@ -165,5 +202,11 @@ export class JobService {
   events(id: string) { return this.repo.events(id) }
   private async mustGet(id: string) { const job = await this.repo.get(id); if (!job) throw new Error('JOB_NOT_FOUND'); return job }
   private async fail(id: string, error: unknown) { const job = await this.repo.get(id); if (!job || ['failed', 'deleted', 'expired'].includes(job.status)) return; const code = String((error as any)?.code || (error as any)?.message || 'INTERNAL_ERROR').split(':')[0]; await this.repo.update(id, { errorCode: code, errorMessage: this.userMessage(code), errorDetails: { status: (error as any)?.status || null } }); await this.repo.transition(id, 'failed', 'job_failed', this.userMessage(code), { code }) }
-  private userMessage(code: string) { const messages: Record<string, string> = { PDF_PASSWORD_PROTECTED: 'Bu PDF parola korumalı. Çeviri için parolasız bir kopya yükleyin.', PDF_MALFORMED: 'PDF dosyası açılamadı veya bozuk görünüyor.', FILE_TOO_MANY_PAGES: `PDF en fazla ${this.config.MAX_PDF_PAGES} sayfa olabilir.`, UNSUPPORTED_FILE_TYPE: 'Bu dosya türü desteklenmiyor.', QUALITY_CHECK_FAILED: 'Çeviri oluşturuldu ancak kalite kontrolünden geçemedi.', PDF_TRANSLATION_EMPTY_BLOCK: 'PDF çevirisinde boş metin bloğu oluştu; eksik çıktı teslim edilmedi.', PDF_TRANSLATION_INCOMPLETE: 'PDF çevirisi bazı metin bloklarını çevirmedi; eksik çıktı teslim edilmedi.', PDF_TRANSLATION_RENDER_INCOMPLETE: 'PDF çevirisi bazı metin bloklarını sayfaya yerleştiremedi; eksik çıktı teslim edilmedi.', RESULT_NOT_READY: 'Çeviri henüz hazır değil.' }; return messages[code] || 'Belge işlenirken beklenmeyen bir hata oluştu.' }
+  private userMessage(code: string) {
+    const fallbackMessages: Record<string, string> = {
+      PDF_NO_EXTRACTABLE_TEXT: 'Bu PDF taranmış veya görüntü tabanlı olabilir; alternatif PDF çeviri akışı da başlatılamadı.',
+      PDF_PRESERVE_SERVICE_FAILED: 'PDF düzen koruma katmanı kullanılamadı; alternatif PDF çeviri akışı da başlatılamadı.',
+    }
+    if (fallbackMessages[code]) return fallbackMessages[code]
+    const messages: Record<string, string> = { PDF_PASSWORD_PROTECTED: 'Bu PDF parola korumalı. Çeviri için parolasız bir kopya yükleyin.', PDF_MALFORMED: 'PDF dosyası açılamadı veya bozuk görünüyor.', FILE_TOO_MANY_PAGES: `PDF en fazla ${this.config.MAX_PDF_PAGES} sayfa olabilir.`, UNSUPPORTED_FILE_TYPE: 'Bu dosya türü desteklenmiyor.', QUALITY_CHECK_FAILED: 'Çeviri oluşturuldu ancak kalite kontrolünden geçemedi.', PDF_TRANSLATION_EMPTY_BLOCK: 'PDF çevirisinde boş metin bloğu oluştu; eksik çıktı teslim edilmedi.', PDF_TRANSLATION_INCOMPLETE: 'PDF çevirisi bazı metin bloklarını çevirmedi; eksik çıktı teslim edilmedi.', PDF_TRANSLATION_RENDER_INCOMPLETE: 'PDF çevirisi bazı metin bloklarını sayfaya yerleştiremedi; eksik çıktı teslim edilmedi.', RESULT_NOT_READY: 'Çeviri henüz hazır değil.' }; return messages[code] || 'Belge işlenirken beklenmeyen bir hata oluştu.' }
 }
