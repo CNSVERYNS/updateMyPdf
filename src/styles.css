@@ -469,3 +469,32 @@ body { background: var(--paper-wash); }
 .avatar { border-radius: 50% !important; }
 @media (min-width: 851px) { .topbar { position: fixed; }.workspace-tabs { position: absolute; top: 50%; left: 50%; z-index: 1; transform: translate(-50%, -50%); }.top-actions { position: relative; z-index: 2; }.brand-lockup { position: relative; z-index: 2; } }
 @media (max-width: 850px) { .workspace-tabs { border-radius: 2px; } }
+
+/* The legacy workspace selector used a stronger red rule. Keep the product navigation rectangular and green. */
+.workspace-tabs .workspace-tab,
+.workspace-tabs .workspace-tab:hover,
+.workspace-tabs .workspace-tab:focus-visible {
+  border-radius: 2px !important;
+  border-color: transparent !important;
+  color: #527665 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+.workspace-tabs .workspace-tab:hover,
+.workspace-tabs .workspace-tab:focus-visible {
+  border-color: #a9d6ba !important;
+  color: #164f3a !important;
+  background: #e8f6ee !important;
+}
+.workspace-tabs .workspace-tab.active,
+.workspace-tabs .workspace-tab.active:hover,
+.workspace-tabs .workspace-tab.active:focus-visible {
+  border-color: #23845b !important;
+  color: #ffffff !important;
+  background: #23845b !important;
+  box-shadow: none !important;
+}
+.app-seo-footer { display: flex; justify-content: space-between; gap: 24px; padding: 22px clamp(18px, 5vw, 70px) 30px; border-top: 1px solid var(--green-line); color: #718078; background: #f8fdf9; font-size: 10px; }
+.app-seo-footer > div { display: grid; gap: 4px; }.app-seo-footer strong { color: var(--green-ink); font-family: Manrope, sans-serif; }.app-seo-footer nav { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 7px 14px; }.app-seo-footer a { color: #267b57; text-decoration: none; }.app-seo-footer a:hover { color: #164f3a; text-decoration: underline; }
+@media (max-width: 700px) { .app-seo-footer { display: grid; }.app-seo-footer nav { justify-content: flex-start; } }

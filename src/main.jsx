@@ -152,6 +152,67 @@ const decodePdfFile = (base64, filename) => {
   return new File([bytes], filename, { type: 'application/pdf' })
 }
 
+const localDocumentDbName = 'updatemypdf-local-workspace'
+const localDocumentStoreName = 'documents'
+const openLocalDocumentDb = () => new Promise((resolve, reject) => {
+  if (typeof indexedDB === 'undefined') {
+    resolve(null)
+    return
+  }
+  const request = indexedDB.open(localDocumentDbName, 1)
+  request.onupgradeneeded = () => {
+    if (!request.result.objectStoreNames.contains(localDocumentStoreName)) request.result.createObjectStore(localDocumentStoreName)
+  }
+  request.onsuccess = () => resolve(request.result)
+  request.onerror = () => reject(request.error || new Error('Local document storage unavailable.'))
+})
+const saveLocalDocument = async (sourceFile, metadata = {}) => {
+  try {
+    const database = await openLocalDocumentDb()
+    if (!database) return false
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(localDocumentStoreName, 'readwrite')
+      transaction.objectStore(localDocumentStoreName).put({ blob: sourceFile, ...metadata }, 'current')
+      transaction.oncomplete = resolve
+      transaction.onerror = () => reject(transaction.error || new Error('Local document save failed.'))
+    })
+    database.close()
+    return true
+  } catch {
+    return false
+  }
+}
+const readLocalDocument = async () => {
+  try {
+    const database = await openLocalDocumentDb()
+    if (!database) return null
+    const value = await new Promise((resolve, reject) => {
+      const request = database.transaction(localDocumentStoreName, 'readonly').objectStore(localDocumentStoreName).get('current')
+      request.onsuccess = () => resolve(request.result || null)
+      request.onerror = () => reject(request.error || new Error('Local document read failed.'))
+    })
+    database.close()
+    return value
+  } catch {
+    return null
+  }
+}
+const clearLocalDocument = async () => {
+  try {
+    const database = await openLocalDocumentDb()
+    if (!database) return
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(localDocumentStoreName, 'readwrite')
+      transaction.objectStore(localDocumentStoreName).delete('current')
+      transaction.oncomplete = resolve
+      transaction.onerror = () => reject(transaction.error || new Error('Local document clear failed.'))
+    })
+    database.close()
+  } catch {
+    // Local cleanup is best effort; Supabase/cloud data is handled separately.
+  }
+}
+
 const mergeAssistantFacts = (previous = [], next = []) => {
   const merged = new Map()
   ;[...(Array.isArray(previous) ? previous : []), ...(Array.isArray(next) ? next : [])].forEach((fact) => {
@@ -214,7 +275,7 @@ const exportMimeTypes = {
 
 function App() {
   const [persistedAssistantState] = useState(readAssistantPersistence)
-  const [workspaceMode, setWorkspaceMode] = useState('edit')
+  const [workspaceMode, setWorkspaceMode] = useState(() => new URLSearchParams(window.location.search).get('workspace') === 'translate' ? 'translate' : 'edit')
   const [file, setFile] = useState(null)
   const [originalFile, setOriginalFile] = useState(null)
   const [pdfTitle, setPdfTitle] = useState('')
@@ -297,24 +358,38 @@ function App() {
   }, [messages, assistantProfile, cachedDocument])
 
   useEffect(() => {
-    if (restoredDocumentRef.current || !cachedDocument?.base64) return
+    if (restoredDocumentRef.current) return
     restoredDocumentRef.current = true
-    try {
-      const restoredFile = decodePdfFile(cachedDocument.base64, cachedDocument.name || 'document.pdf')
-      setFile(restoredFile)
-      setOriginalFile(restoredFile)
-      setPdfTitle(cachedDocument.title || restoredFile.name)
-      setCurrentCloudPath(cachedDocument.cloudPath || '')
-      setSaveState(cachedDocument.cloudPath ? 'saved' : 'idle')
-      setFileUrl(URL.createObjectURL(restoredFile))
-      setPageCount(0)
-      const infoFormData = new FormData()
-      infoFormData.append('file', restoredFile)
-      apiFetch('/api/pdf/info', { method: 'POST', headers: authHeaders(), body: infoFormData }).then((infoResponse) => infoResponse.ok ? infoResponse.json() : null).then((info) => { if (info?.pageCount) setPageCount(info.pageCount) }).catch(() => {})
-    } catch {
-      setCachedDocument(null)
+    const restoreDocument = async () => {
+      let restoredFile = null
+      let restoredMetadata = cachedDocument || {}
+      try {
+        if (cachedDocument?.base64) restoredFile = decodePdfFile(cachedDocument.base64, cachedDocument.name || 'document.pdf')
+        else {
+          const localDocument = await readLocalDocument()
+          if (localDocument?.blob) {
+            restoredMetadata = { ...restoredMetadata, ...localDocument }
+            restoredFile = new File([localDocument.blob], localDocument.name || 'document.pdf', { type: localDocument.blob.type || 'application/pdf' })
+          }
+        }
+        if (!restoredFile) return
+        setFile(restoredFile)
+        setOriginalFile(restoredFile)
+        setPdfTitle(restoredMetadata.title || restoredFile.name)
+        setCurrentCloudPath(restoredMetadata.cloudPath || '')
+        setSaveState(restoredMetadata.cloudPath ? 'saved' : 'idle')
+        setFileUrl(URL.createObjectURL(restoredFile))
+        setPageCount(0)
+        const infoFormData = new FormData()
+        infoFormData.append('file', restoredFile)
+        apiFetch('/api/pdf/info', { method: 'POST', headers: authHeaders(), body: infoFormData }).then((infoResponse) => infoResponse.ok ? infoResponse.json() : null).then((info) => { if (info?.pageCount) setPageCount(info.pageCount) }).catch(() => {})
+      } catch {
+        setCachedDocument(null)
+        await clearLocalDocument()
+      }
     }
-  }, [cachedDocument])
+    void restoreDocument()
+  }, [])
 
   useEffect(() => {
     if (!supabase) return undefined
@@ -501,6 +576,22 @@ function App() {
     setShowAccountNudge(true)
   }
 
+  const clearAssistantHistory = () => {
+    setMessages(initialMessages)
+    setAssistantQuestions([])
+    setAssistantProfile(null)
+    setCachedDocument(null)
+    setFile(null)
+    setOriginalFile(null)
+    setPdfTitle('')
+    if (fileUrl) URL.revokeObjectURL(fileUrl)
+    setFileUrl('')
+    setCurrentCloudPath('')
+    setSaveState('idle')
+    try { localStorage.removeItem(assistantPersistenceKey) } catch {}
+    void clearLocalDocument()
+  }
+
   const handleAuthSubmit = async ({ email, password, fullName, marketingOptIn }) => {
     if (!supabase) return
     setAuthBusy(true)
@@ -511,14 +602,15 @@ function App() {
         : await supabase.auth.signInWithPassword({ email, password })
       if (result.error) throw result.error
       if (authMode === 'signup' && !result.data.session) {
+        clearAssistantHistory()
         setShowAuth(false)
         setToast({ tone: 'success', text: 'Hesabın oluşturuldu. E-posta kutunu kontrol edip doğrulama bağlantısına tıkla.' })
         return
       }
+      clearAssistantHistory()
       setShowAuth(false)
       setAuthError('')
       setToast({ tone: 'success', text: 'Cloud hesabına başarıyla giriş yaptın.' })
-      setMessages((current) => [...current, { id: Date.now(), role: 'assistant', text: 'Cloud hesabına giriş yaptın. PDF’lerini güvenli bucket’a kaydedebilirsin.' }])
     } catch (error) {
       setAuthError(error.message || 'Giriş işlemi başarısız oldu.')
     } finally {
@@ -594,20 +686,12 @@ function App() {
 
   const signOut = async () => {
     await supabase?.auth.signOut()
-    if (fileUrl) URL.revokeObjectURL(fileUrl)
-    setFile(null)
-    setOriginalFile(null)
-    setFileUrl('')
-    setPdfTitle('')
+    clearAssistantHistory()
     setCloudFiles([])
     setShowCloudFiles(false)
     setCurrentCloudPath('')
     setSaveState('idle')
     setShowAccount(false)
-    setMessages(initialMessages)
-    setAssistantProfile(null)
-    setCachedDocument(null)
-    try { localStorage.removeItem(assistantPersistenceKey) } catch {}
   }
 
   const uploadFileToCloud = async (sourceFile, existingPath = '') => {
@@ -766,6 +850,7 @@ function App() {
 
   const setPdf = (selectedFile) => {
     if (!selectedFile || selectedFile.type !== 'application/pdf') return
+    restoredDocumentRef.current = true
     if (fileUrl) URL.revokeObjectURL(fileUrl)
     setFile(selectedFile)
     setOriginalFile(selectedFile)
@@ -790,7 +875,9 @@ function App() {
     setChanges([])
     setAssistantQuestions([])
     setAssistantProfile(null)
-    setCachedDocument(null)
+    const localMetadata = { name: selectedFile.name, title: selectedFile.name, cloudPath: '' }
+    setCachedDocument(localMetadata)
+    void saveLocalDocument(selectedFile, localMetadata)
     setCurrentCloudPath('')
     setSaveState('idle')
   }
@@ -955,6 +1042,7 @@ function App() {
           setPdfTitle(assistantData.documentTitle || generatedFile.name)
           setPageCount(0)
           if (assistantData.generatedPdf.length <= 3200000) setCachedDocument({ base64: assistantData.generatedPdf, name: generatedFile.name, title: assistantData.documentTitle || generatedFile.name })
+          void saveLocalDocument(generatedFile, { name: generatedFile.name, title: assistantData.documentTitle || generatedFile.name, cloudPath: '' })
           const infoFormData = new FormData()
           infoFormData.append('file', generatedFile)
           apiFetch('/api/pdf/info', { method: 'POST', headers: authHeaders(), body: infoFormData }).then((infoResponse) => infoResponse.ok ? infoResponse.json() : null).then((info) => { if (info?.pageCount) setPageCount(info.pageCount) }).catch(() => {})
@@ -1024,6 +1112,9 @@ function App() {
         const titleAction = data.actions?.find((action) => action.type === 'set_title' && action.title)
         if (titleAction?.title) setPdfTitle(titleAction.title)
         setPageCount(editedPageCount)
+        const editedMetadata = { name: editedFile.name, title: titleAction?.title || pdfTitle || editedFile.name, cloudPath: currentCloudPath || '' }
+        setCachedDocument((current) => ({ ...(current || {}), ...editedMetadata }))
+        void saveLocalDocument(editedFile, editedMetadata)
         const infoFormData = new FormData()
         infoFormData.append('file', editedFile)
         apiFetch('/api/pdf/info', { method: 'POST', headers: authHeaders(), body: infoFormData })
@@ -1104,6 +1195,8 @@ function App() {
     if (originalFile && file !== originalFile) {
       setFile(originalFile)
       setFileUrl(URL.createObjectURL(originalFile))
+      setCachedDocument((current) => ({ ...(current || {}), name: originalFile.name, title: pdfTitle || originalFile.name, cloudPath: currentCloudPath || '' }))
+      void saveLocalDocument(originalFile, { name: originalFile.name, title: pdfTitle || originalFile.name, cloudPath: currentCloudPath || '' })
       setCurrentPage(1)
       const infoFormData = new FormData()
       infoFormData.append('file', originalFile)
@@ -1308,6 +1401,11 @@ function App() {
           </div>
         </section>
       </main>}
+
+      <footer className="app-seo-footer">
+        <div><strong>updateMyPDF</strong><span>AI PDF çeviri, düzenleme ve görsel kalite kontrolü.</span></div>
+        <nav aria-label="Dil rehberleri"><a href="/tr/">Türkçe PDF rehberi</a><a href="/en/">PDF translation guide</a><a href="/es/">Guía de traducción PDF</a><a href="/de/">PDF-Übersetzung</a><a href="/fr/">Guide PDF</a><a href="/it/">Guida PDF</a><a href="/pt/">Guia PDF</a><a href="/nl/">PDF-gids</a></nav>
+      </footer>
 
       {showHistory && <HistoryDrawer notifications={notifications} readNotificationIds={readNotificationIds} unreadCount={unreadNotificationCount} changes={changes} onNotificationOpen={openNotification} onClose={() => setShowHistory(false)} />}
       {showComparison && <ComparisonDrawer comparison={comparison} onClose={() => setShowComparison(false)} />}
