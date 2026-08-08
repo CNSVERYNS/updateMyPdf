@@ -3,7 +3,7 @@ import base64
 import fitz
 
 import app as quality_app
-from app import adapt_text_layout, extract_layout, inspect_documents, line_text_overlap_review, region_geometry_review, render_preserved_layout, repair_visual_assets
+from app import adapt_text_layout, drawing_style_review, extract_layout, inspect_documents, line_text_overlap_review, region_geometry_review, render_preserved_layout, repair_visual_assets
 
 
 PNG_1X1 = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
@@ -29,6 +29,7 @@ def test_same_layout_passes():
     assert result["qualityLayers"]["blockGeometry"]["score"] == 100
     assert result["qualityLayers"]["lineTextOverlap"]["score"] == 100
     assert result["qualityLayers"]["regionalScaling"]["scope"] == "none"
+    assert result["qualityLayers"]["drawingStyle"]["score"] == 100
 
 
 def test_color_consistency_catches_changed_text_color():
@@ -47,6 +48,25 @@ def test_color_consistency_catches_changed_text_color():
     report = inspect_documents(source, result)
     assert report["qualityLayers"]["colorConsistency"]["score"] < 90
     assert report["passed"] is False
+
+
+def test_drawing_style_catches_changed_frame_stroke():
+    source_document = fitz.open()
+    source_page = source_document.new_page(width=300, height=400)
+    source_page.draw_rect(fitz.Rect(30, 30, 240, 130), color=(0, 0, 0), width=1)
+    source = source_document.tobytes()
+    source_document.close()
+
+    result_document = fitz.open()
+    result_page = result_document.new_page(width=300, height=400)
+    result_page.draw_rect(fitz.Rect(30, 30, 240, 130), color=(1, 0, 0), width=1)
+    result = result_document.tobytes()
+    result_document.close()
+
+    report = drawing_style_review(fitz.open(stream=source, filetype="pdf"), fitz.open(stream=result, filetype="pdf"))
+    assert report["strokeMismatches"] >= 1
+    assert report["score"] < 90
+    assert any(issue["criterion"] == "QC-COL-004" for issue in report["issues"])
 
 
 def test_rendered_visual_review_catches_added_gray_text_plate():

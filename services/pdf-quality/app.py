@@ -1002,6 +1002,92 @@ def line_text_overlap_review(source: fitz.Document, result: fitz.Document) -> di
     }
 
 
+def _drawing_style_candidate(drawing: dict[str, Any]) -> dict[str, Any] | None:
+    items = drawing.get("items", [])
+    kinds = tuple(sorted({str(item[0]) for item in items if item}))
+    if not any(kind in {"l", "re", "qu", "c"} for kind in kinds):
+        return None
+    raw_rect = drawing.get("rect")
+    if raw_rect is None:
+        return None
+    rect = fitz.Rect(raw_rect)
+    if rect.is_empty:
+        return None
+    return {
+        "rect": rect,
+        "kinds": kinds,
+        "color": drawing.get("color"),
+        "fill": drawing.get("fill"),
+        "width": float(drawing.get("width", 0) or 0),
+        "dashes": str(drawing.get("dashes", "") or ""),
+    }
+
+
+def _style_color_delta(left: Any, right: Any) -> float | None:
+    if left is None or right is None:
+        return None
+    try:
+        return max(abs(float(left[index]) - float(right[index])) for index in range(min(len(left), len(right))))
+    except Exception:
+        return None
+
+
+def drawing_style_review(source: fitz.Document, result: fitz.Document) -> dict[str, Any]:
+    """Compare object-level vector fill/stroke styles at preserved coordinates."""
+    issues: list[dict[str, Any]] = []
+    matched = 0
+    fill_mismatches = 0
+    stroke_mismatches = 0
+    width_mismatches = 0
+    dash_mismatches = 0
+    for page_index in range(min(len(source), len(result))):
+        source_styles = [candidate for drawing in source[page_index].get_drawings() if (candidate := _drawing_style_candidate(drawing)) is not None]
+        result_styles = [candidate for drawing in result[page_index].get_drawings() if (candidate := _drawing_style_candidate(drawing)) is not None]
+        used: set[int] = set()
+        for source_style in source_styles:
+            candidates = [
+                (index, candidate) for index, candidate in enumerate(result_styles)
+                if index not in used and candidate["kinds"] == source_style["kinds"]
+                and abs(candidate["rect"].x0 - source_style["rect"].x0) <= 2
+                and abs(candidate["rect"].y0 - source_style["rect"].y0) <= 2
+                and abs(candidate["rect"].x1 - source_style["rect"].x1) <= 2
+                and abs(candidate["rect"].y1 - source_style["rect"].y1) <= 2
+            ]
+            if not candidates:
+                continue
+            result_index, result_style = min(candidates, key=lambda item: abs(item[1]["rect"].x0 - source_style["rect"].x0) + abs(item[1]["rect"].y0 - source_style["rect"].y0))
+            used.add(result_index)
+            matched += 1
+            fill_delta = _style_color_delta(source_style["fill"], result_style["fill"])
+            stroke_delta = _style_color_delta(source_style["color"], result_style["color"])
+            width_delta = abs(source_style["width"] - result_style["width"])
+            if fill_delta is not None and fill_delta > 0.04:
+                fill_mismatches += 1
+                issues.append({"criterion": "QC-COL-003", "type": "fill-style-mismatch", "severity": "high", "page": page_index + 1, "rect": [round(value, 2) for value in source_style["rect"]], "sourceFill": source_style["fill"], "resultFill": result_style["fill"], "message": "Vector fill color changed at a preserved object coordinate."})
+            if stroke_delta is not None and stroke_delta > 0.04:
+                stroke_mismatches += 1
+                issues.append({"criterion": "QC-COL-004", "type": "stroke-style-mismatch", "severity": "high", "page": page_index + 1, "rect": [round(value, 2) for value in source_style["rect"]], "sourceStroke": source_style["color"], "resultStroke": result_style["color"], "message": "Vector stroke color changed at a preserved object coordinate."})
+            if width_delta > 0.25:
+                width_mismatches += 1
+                issues.append({"criterion": "QC-COL-005", "type": "stroke-width-mismatch", "severity": "high", "page": page_index + 1, "rect": [round(value, 2) for value in source_style["rect"]], "sourceWidth": source_style["width"], "resultWidth": result_style["width"], "message": "Vector stroke width changed at a preserved object coordinate."})
+            if source_style["dashes"] != result_style["dashes"]:
+                dash_mismatches += 1
+                issues.append({"criterion": "QC-COL-005", "type": "dash-pattern-mismatch", "severity": "high", "page": page_index + 1, "rect": [round(value, 2) for value in source_style["rect"]], "sourceDashes": source_style["dashes"], "resultDashes": result_style["dashes"], "message": "Vector dash pattern changed at a preserved object coordinate."})
+    mismatch_count = fill_mismatches + stroke_mismatches + width_mismatches + dash_mismatches
+    score = max(0, 100 - min(70, mismatch_count * 15))
+    return {
+        "score": score,
+        "status": "pass" if score >= PASS_SCORE else "fail",
+        "engine": "deterministic-vector-style-review",
+        "matchedObjects": matched,
+        "fillMismatches": fill_mismatches,
+        "strokeMismatches": stroke_mismatches,
+        "widthMismatches": width_mismatches,
+        "dashMismatches": dash_mismatches,
+        "issues": issues[:80],
+    }
+
+
 def block_geometry_review(source: fitz.Document, result: fitz.Document) -> dict[str, Any]:
     """Perform a strict one-to-one geometry check for every text paragraph.
 
@@ -1444,6 +1530,7 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
     block_geometry = block_geometry_review_strict(source, result)
     region_review = region_geometry_review(source, result)
     line_text_overlap = line_text_overlap_review(source, result)
+    drawing_style = drawing_style_review(source, result)
     color_consistency = color_consistency_review(source, result)
     capture_comparison = visual_review.get("captureComparison", {"score": 0, "status": "fail", "pages": []})
     source_text_for_comparison = "\n".join(page.get_text("text") or "" for page in source)
@@ -1540,7 +1627,7 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
     layout_score = 100
     layout_score -= min(25, len(overflow_pages) * 15)
     layout_score -= min(25, len(blank_pages) * 15)
-    layout_score = max(0, min(layout_score, block_geometry["score"], region_review["score"], line_text_overlap["score"]))
+    layout_score = max(0, min(layout_score, block_geometry["score"], region_review["score"], line_text_overlap["score"], drawing_style["score"]))
 
     quality_layers = {
         "fileIntegrity": {"score": 100, "status": "pass", "sourceBytes": len(source_bytes), "resultBytes": len(result_bytes)},
@@ -1556,12 +1643,13 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
         "blockGeometry": block_geometry,
         "regionGeometry": region_review,
         "lineTextOverlap": line_text_overlap,
+        "drawingStyle": drawing_style,
         "layout": {"score": layout_score, "status": "pass" if layout_score >= PASS_SCORE else "warning", "sourceTextBlocks": source_metrics["textBlocks"], "resultTextBlocks": result_metrics["textBlocks"], "sourceLinks": source_metrics["links"], "resultLinks": result_metrics["links"], "sourceAnnotations": source_metrics["annotations"], "resultAnnotations": result_metrics["annotations"], "overflowPages": overflow_pages, "blankPages": sorted(set(blank_pages))},
     }
-    weighted_score = round((page_score * 0.15) + (text_score * 0.20) + (typography_score * 0.15) + (color_consistency["score"] * 0.10) + (visual_score * 0.10) + (capture_comparison["score"] * 0.10) + (visual_review["score"] * 0.10) + (region_review["score"] * 0.04) + (line_text_overlap["score"] * 0.04) + (layout_score * 0.02))
+    weighted_score = round((page_score * 0.15) + (text_score * 0.20) + (typography_score * 0.15) + (color_consistency["score"] * 0.10) + (visual_score * 0.08) + (capture_comparison["score"] * 0.10) + (visual_review["score"] * 0.09) + (region_review["score"] * 0.04) + (line_text_overlap["score"] * 0.04) + (drawing_style["score"] * 0.03) + (layout_score * 0.02))
     # A document is only as good as its weakest critical layer. This prevents
     # a high weighted average from hiding omitted text or broken layout.
-    score = max(0, min(100, weighted_score, page_score, text_score, typography_score, color_consistency["score"], visual_score, capture_comparison["score"], visual_review["score"], block_geometry["score"], region_review["score"], line_text_overlap["score"], layout_score))
+    score = max(0, min(100, weighted_score, page_score, text_score, typography_score, color_consistency["score"], visual_score, capture_comparison["score"], visual_review["score"], block_geometry["score"], region_review["score"], line_text_overlap["score"], drawing_style["score"], layout_score))
     source.close()
     result.close()
     return {
@@ -2131,6 +2219,7 @@ def translation_quality_gate(report: dict[str, Any]) -> bool:
     capture_layer = layers.get("captureComparison")
     region_layer = layers.get("regionGeometry")
     line_text_layer = layers.get("lineTextOverlap")
+    drawing_style_layer = layers.get("drawingStyle")
     return (
         report.get("score", 0) >= PASS_SCORE
         and page_integrity_preserved(report)
@@ -2140,6 +2229,7 @@ def translation_quality_gate(report: dict[str, Any]) -> bool:
         and (capture_layer is None or capture_layer.get("score", 0) >= PASS_SCORE)
         and (region_layer is None or region_layer.get("score", 0) >= PASS_SCORE)
         and (line_text_layer is None or line_text_layer.get("score", 0) >= PASS_SCORE)
+        and (drawing_style_layer is None or drawing_style_layer.get("score", 0) >= PASS_SCORE)
     )
 
 
@@ -2177,6 +2267,7 @@ def render_preserved_layout(source_bytes: bytes, translations: dict[str, str]) -
             quality_layers.get("blockGeometry", {}).get("score", PASS_SCORE),
             quality_layers.get("regionGeometry", {}).get("score", PASS_SCORE),
             quality_layers.get("lineTextOverlap", {}).get("score", PASS_SCORE),
+            quality_layers.get("drawingStyle", {}).get("score", PASS_SCORE),
         )
         # Once the source-region geometry is sound, shrinking cannot repair a
         # font/color/capture mismatch and only repeats an expensive full-page

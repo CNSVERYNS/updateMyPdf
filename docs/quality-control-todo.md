@@ -109,9 +109,9 @@ Kural: Bir kriter kodu tamamlanmadan “tamamlandı” işaretlenmez. Kalite kap
 
 - [x] QC-COL-001: Text color consistency kontrolü.
 - [x] QC-COL-002: Rendered background mismatch kontrolü.
-- [ ] QC-COL-003: Fill color ve frame fill eşleşmeli.
-- [ ] QC-COL-004: Border/stroke color eşleşmeli.
-- [ ] QC-COL-005: Stroke width ve dash pattern korunmalı.
+- [x] QC-COL-003: Fill color ve frame fill eşleşmeli.
+- [x] QC-COL-004: Border/stroke color eşleşmeli.
+- [x] QC-COL-005: Stroke width ve dash pattern korunmalı.
 - [ ] QC-COL-006: Opacity/transparency farkı kontrol edilmeli.
 - [ ] QC-COL-007: Color space/ICC profile değişimi raporlanmalı.
 - [ ] QC-COL-008: Grayscale renklerin yanlış renge dönüşmesi yakalanmalı.
