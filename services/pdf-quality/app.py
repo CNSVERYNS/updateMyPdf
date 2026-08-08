@@ -1282,6 +1282,15 @@ def insert_single_line_text(page: fitz.Page, document: fitz.Document, source_blo
             return True
         return False
 
+    # Short labels must stay on one visual line. Try controlled horizontal
+    # compression before accepting a smaller font that can wrap into a second
+    # line and collide with the next form row.
+    for factor in (1.0, 0.97, 0.94, 0.90, 0.86, 0.82, 0.78, 0.74, 0.70, 0.65, 0.60):
+        size = max(4.0, round(base_size * factor, 2))
+        for width_scale in (0.98, 0.94, 0.88, 0.82, 0.76, 0.70, 0.64, 0.58, 0.52, 0.46, 0.40):
+            if try_candidate(size, width_scale):
+                return True
+
     for factor in (1.0, 0.97, 0.94):
         size = max(4.0, round(base_size * factor, 2))
         for candidate_font in fonts:
@@ -1392,6 +1401,13 @@ def insert_preserved_text(page: fitz.Page, document: fitz.Document, source_block
     # paragraph inside the safe rectangle instead; the renderer then wraps it
     # naturally and the visual gate checks the resulting geometry.
     alignment = int(source_block.get("alignment", block_alignment(source_block)))
+    if (
+        "\n" not in translated_text
+        and len(source_block.get("lineBoxes") or []) == 1
+        and len(translated_text.strip()) > len(source_block.get("text", "").strip()) * 1.05
+    ):
+        if insert_single_line_text(page, document, source_block, translated_text, font_cache, global_scale):
+            return True
     if "\n" in translated_text and insert_explicit_line_text(page, document, source_block, translated_text, font_cache, global_scale):
         return True
 
