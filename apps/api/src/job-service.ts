@@ -181,7 +181,7 @@ export class JobService {
   listExpired() { return this.repo.listExpired(new Date()) }
   events(id: string) { return this.repo.events(id) }
   private async mustGet(id: string) { const job = await this.repo.get(id); if (!job) throw new Error('JOB_NOT_FOUND'); return job }
-  private async fail(id: string, error: unknown) { const job = await this.repo.get(id); if (!job || ['failed', 'deleted', 'expired'].includes(job.status)) return; const code = String((error as any)?.code || (error as any)?.message || 'INTERNAL_ERROR').split(':')[0]; await this.repo.update(id, { errorCode: code, errorMessage: this.userMessage(code), errorDetails: { status: (error as any)?.status || null } }); await this.repo.transition(id, 'failed', 'job_failed', this.userMessage(code), { code }) }
+  private async fail(id: string, error: unknown) { const job = await this.repo.get(id); if (!job || ['failed', 'deleted', 'expired'].includes(job.status)) return; const code = String((error as any)?.code || (error as any)?.message || 'INTERNAL_ERROR').split(':')[0]; const details = (error as any)?.details; await this.repo.update(id, { errorCode: code, errorMessage: this.userMessage(code), errorDetails: { status: (error as any)?.status || null, ...(details && typeof details === 'object' ? { details } : {}) } }); await this.repo.transition(id, 'failed', 'job_failed', this.userMessage(code), { code }) }
   private userMessage(code: string) {
     const specificMessages: Record<string, string> = {
       PDF_NO_EXTRACTABLE_TEXT: 'Bu PDF taranmış veya görüntü tabanlı; metin katmanı olmadığı için düzeni güvenli biçimde korunarak çevrilemedi.',
