@@ -32,6 +32,12 @@ def test_same_layout_passes():
     assert result["qualityLayers"]["drawingStyle"]["score"] == 100
 
 
+def test_font_family_classification_preserves_serif_and_sans_intent():
+    assert quality_app.font_family_class("Times-Bold") == "serif"
+    assert quality_app.font_family_class("Arial-Bold") == "sans"
+    assert quality_app.font_family_class("Some-Unknown-Font") == "unknown"
+
+
 def test_color_consistency_catches_changed_text_color():
     source_document = fitz.open()
     source_page = source_document.new_page(width=300, height=400)

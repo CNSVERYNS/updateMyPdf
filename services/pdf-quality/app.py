@@ -125,6 +125,15 @@ def normalized_font_name(name: str) -> str:
     return value.split("+")[-1]
 
 
+def font_family_class(name: str) -> str:
+    normalized = normalized_font_name(name)
+    if any(token in normalized for token in ("times", "serif", "roman", "georgia", "cambria", "garamond", "baskerville")):
+        return "serif"
+    if any(token in normalized for token in ("sans", "arial", "helvetica", "calibri", "tahoma", "verdana")):
+        return "sans"
+    return "unknown"
+
+
 def source_font_can_render_text(document: fitz.Document, page: fitz.Page, span: dict[str, Any], text: str) -> bool:
     requested = normalized_font_name(span.get("font", ""))
     found = False
@@ -190,12 +199,18 @@ def typography_consistency(source: fitz.Document, result: fitz.Document) -> dict
             visual_size_match = height_delta <= max(0.4, source_height * 0.06)
             exact_font_match = normalized_font_name(source_span.get("font", "")) == normalized_font_name(result_span.get("font", ""))
             font_fallback = not exact_font_match and not source_font_can_render_text(source, source[page_index], source_span, str(result_span.get("text", "")))
+            source_family = font_family_class(str(source_span.get("font", "")))
+            result_family = font_family_class(str(result_span.get("font", "")))
+            family_match = source_family == "unknown" or result_family == "unknown" or source_family == result_family
             comparisons.append({
                 "page": page_index + 1,
                 "sourceFont": str(source_span.get("font", "")),
                 "resultFont": str(result_span.get("font", "")),
                 "fontMatch": exact_font_match,
                 "fontFallback": font_fallback,
+                "sourceFamily": source_family,
+                "resultFamily": result_family,
+                "fontFamilyMatch": family_match,
                 "sourceSize": round(source_size, 2),
                 "resultSize": round(result_size, 2),
                 "sizeDelta": size_delta,
@@ -213,6 +228,7 @@ def typography_consistency(source: fitz.Document, result: fitz.Document) -> dict
     font_fallbacks = sum(1 for item in comparisons if item["fontFallback"])
     size_matches = sum(1 for item in comparisons if item["sizeMatch"])
     style_matches = sum(1 for item in comparisons if item["styleMatch"])
+    family_matches = sum(1 for item in comparisons if item["fontFamilyMatch"])
     exact_font_rate = round(font_matches / max(total, 1), 3) if total else 1.0
     font_rate = round((font_matches + font_fallbacks) / max(total, 1), 3) if total else 1.0
     size_rate = round(size_matches / max(total, 1), 3) if total else 1.0
@@ -230,6 +246,8 @@ def typography_consistency(source: fitz.Document, result: fitz.Document) -> dict
         "exactFontMatchRate": exact_font_rate,
         "fontMatchRate": font_rate,
         "fontFallbackCount": font_fallbacks,
+        "fontFamilyMatches": family_matches,
+        "fontFamilyMatchRate": round(family_matches / max(total, 1), 3) if total else 1.0,
         "sizeMatchRate": size_rate,
         "styleMatchRate": style_rate,
         "fontMatches": font_matches,
@@ -1811,21 +1829,25 @@ def font_supports_text(font_bytes: bytes, text: str) -> bool:
 def source_font(page: fitz.Page, document: fitz.Document, span: dict[str, Any], cache: dict[str, str], text: str = "", prefer_condensed: bool = False) -> str:
     font_path = UNICODE_FONT_PATH
     font_name = str(span.get("font", "")).lower()
+    family = font_family_class(font_name)
+    family_root = "DejaVuSerif" if family == "serif" else "DejaVuSans"
+    if family == "serif":
+        font_path = font_path.replace("DejaVuSans", "DejaVuSerif")
     flags = int(span.get("flags", 0) or 0)
     is_bold = "bold" in font_name or bool(flags & 16)
     is_italic = "italic" in font_name or "oblique" in font_name or bool(flags & 2)
     style_key = "regular"
     if is_bold and is_italic:
         style_key = "bold_italic"
-        font_path = font_path.replace("DejaVuSans.ttf", "DejaVuSans-BoldOblique.ttf")
+        font_path = font_path.replace(f"{family_root}.ttf", f"{family_root}-BoldOblique.ttf")
     elif is_bold:
         style_key = "bold"
-        font_path = font_path.replace("DejaVuSans.ttf", "DejaVuSans-Bold.ttf")
+        font_path = font_path.replace(f"{family_root}.ttf", f"{family_root}-Bold.ttf")
     elif is_italic:
         style_key = "italic"
-        font_path = font_path.replace("DejaVuSans.ttf", "DejaVuSans-Oblique.ttf")
+        font_path = font_path.replace(f"{family_root}.ttf", f"{family_root}-Oblique.ttf")
     if prefer_condensed:
-        font_path = font_path.replace("DejaVuSans", "DejaVuSansCondensed")
+        font_path = font_path.replace(family_root, f"{family_root}Condensed")
     requested = str(span.get("font", ""))
     if not prefer_condensed:
         for font in page.get_fonts(full=True):
@@ -1844,7 +1866,7 @@ def source_font(page: fitz.Page, document: fitz.Document, span: dict[str, Any], 
                     return alias
             except Exception:
                 continue
-    unicode_key = f"unicode:{style_key}:{'condensed' if prefer_condensed else 'normal'}"
+    unicode_key = f"unicode:{family}:{style_key}:{'condensed' if prefer_condensed else 'normal'}"
     if unicode_key in cache:
         return cache[unicode_key]
     if os.path.exists(font_path):
