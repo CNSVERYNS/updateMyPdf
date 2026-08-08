@@ -36,10 +36,26 @@ export const inspectQuality = async (config: AppConfig, source: Buffer, result: 
     const resultPart = result.buffer.slice(result.byteOffset, result.byteOffset + result.byteLength) as ArrayBuffer
     form.append('source', new Blob([sourcePart], { type: 'application/pdf' }), 'source.pdf')
     form.append('translated', new Blob([resultPart], { type: 'application/pdf' }), 'translated.pdf')
-    const response = await fetch(`${config.PDF_QUALITY_SERVICE_URL.replace(/\/$/, '')}/inspect`, { method: 'POST', body: form, signal: AbortSignal.timeout(Math.min(config.AZURE_REQUEST_TIMEOUT_MS, 30000)) })
+    const response = await fetch(`${config.PDF_QUALITY_SERVICE_URL.replace(/\/$/, '')}/inspect`, { method: 'POST', body: form, redirect: 'error', signal: AbortSignal.timeout(config.PDF_QUALITY_REQUEST_TIMEOUT_MS) })
     if (!response.ok) throw new Error(`quality service ${response.status}`)
     return await response.json() as QualityResult
-  } catch { return localPdfCheck(source, result) }
+  } catch {
+    // A local shallow check cannot replace the required font/color/capture
+    // review. Keep the output unavailable until the quality service responds.
+    return {
+      passed: false,
+      score: 0,
+      warnings: ['PDF kalite kontrol servisi kullanılamıyor; doğrulanmamış çıktı teslim edilmedi.'],
+      sourcePageCount: null,
+      resultPageCount: null,
+      sourcePageSizes: [],
+      resultPageSizes: [],
+      textCoverage: {},
+      possibleOverflowPages: [],
+      blankPages: [],
+      qualityLayers: { qualityService: { score: 0, status: 'unavailable' } },
+    }
+  }
 }
 
 export const repairVisualAssets = async (config: AppConfig, source: Buffer, result: Buffer, extension: string): Promise<Buffer> => {
@@ -50,7 +66,7 @@ export const repairVisualAssets = async (config: AppConfig, source: Buffer, resu
     const resultPart = result.buffer.slice(result.byteOffset, result.byteOffset + result.byteLength) as ArrayBuffer
     form.append('source', new Blob([sourcePart], { type: 'application/pdf' }), 'source.pdf')
     form.append('translated', new Blob([resultPart], { type: 'application/pdf' }), 'translated.pdf')
-    const response = await fetch(`${config.PDF_QUALITY_SERVICE_URL.replace(/\/$/, '')}/repair-visual-assets`, { method: 'POST', body: form, signal: AbortSignal.timeout(Math.min(config.AZURE_REQUEST_TIMEOUT_MS, 30000)) })
+    const response = await fetch(`${config.PDF_QUALITY_SERVICE_URL.replace(/\/$/, '')}/repair-visual-assets`, { method: 'POST', body: form, redirect: 'error', signal: AbortSignal.timeout(config.PDF_QUALITY_REQUEST_TIMEOUT_MS) })
     if (!response.ok) throw new Error(`quality repair service ${response.status}`)
     const repaired = Buffer.from(await response.arrayBuffer())
     return repaired.length > 0 ? repaired : result

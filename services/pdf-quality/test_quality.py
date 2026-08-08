@@ -24,6 +24,27 @@ def test_same_layout_passes():
     assert result["sourcePageCount"] == 1
     assert result["qualityLayers"]["typographyConsistency"]["score"] == 100
     assert result["qualityLayers"]["visualReview"]["score"] == 100
+    assert result["qualityLayers"]["colorConsistency"]["score"] == 100
+    assert result["qualityLayers"]["captureComparison"]["score"] == 100
+    assert result["qualityLayers"]["blockGeometry"]["score"] == 100
+
+
+def test_color_consistency_catches_changed_text_color():
+    source_document = fitz.open()
+    source_page = source_document.new_page(width=300, height=400)
+    source_page.insert_text((40, 60), "A text block with preserved geometry", fontsize=12, color=(0, 0, 0))
+    source = source_document.tobytes()
+    source_document.close()
+
+    result_document = fitz.open()
+    result_page = result_document.new_page(width=300, height=400)
+    result_page.insert_text((40, 60), "A translated block with preserved geometry", fontsize=12, color=(1, 0, 0))
+    result = result_document.tobytes()
+    result_document.close()
+
+    report = inspect_documents(source, result)
+    assert report["qualityLayers"]["colorConsistency"]["score"] < 90
+    assert report["passed"] is False
 
 
 def test_rendered_visual_review_catches_added_gray_text_plate():

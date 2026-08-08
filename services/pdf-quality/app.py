@@ -307,6 +307,51 @@ def _dark_ink_density(page: fitz.Page, pixmap: fitz.Pixmap, rect: fitz.Rect) -> 
     return dark / max(total, 1)
 
 
+def rendered_capture_comparison(source_page: fitz.Page, result_page: fitz.Page, source_capture: fitz.Pixmap, result_capture: fitz.Pixmap) -> dict[str, Any]:
+    """Compare low-resolution rendered captures without comparing glyph text.
+
+    Translation changes individual glyph pixels, so a raw pixel-equality test
+    would reject a correct translation. Coarse luminance and ink-density tiles
+    still catch page shifts, missing panels, collapsed columns, and large
+    background changes while remaining tolerant of different word shapes.
+    """
+    if source_capture.width != result_capture.width or source_capture.height != result_capture.height:
+        return {"score": 0, "status": "fail", "luminanceDelta": 1.0, "inkDensityDelta": 1.0, "sampleCount": 0}
+    columns = 32
+    rows = 40
+    # Text glyphs legitimately change after translation. Compare the canvas
+    # and artwork outside source text regions here; typography, color, line
+    # placement, and overlap are checked by their dedicated layers.
+    text_regions = [
+        fitz.Rect(block["rect"].x0 - 1.5, block["rect"].y0 - 1.5, block["rect"].x1 + 1.5, block["rect"].y1 + 1.5)
+        for block in text_blocks(source_page)
+    ]
+    luminance_deltas: list[float] = []
+    ink_deltas: list[float] = []
+    for row in range(rows):
+        for column in range(columns):
+            x = round((column + 0.5) * source_capture.width / columns)
+            y = round((row + 0.5) * source_capture.height / rows)
+            point = fitz.Point(x / max(VISUAL_REVIEW_SCALE, 0.5), y / max(VISUAL_REVIEW_SCALE, 0.5))
+            if any(region.contains(point) for region in text_regions):
+                continue
+            source_luma = _luminance(_pixmap_rgb(source_capture, x, y))
+            result_luma = _luminance(_pixmap_rgb(result_capture, x, y))
+            luminance_deltas.append(abs(source_luma - result_luma))
+            ink_deltas.append(abs(float(source_luma < 0.82) - float(result_luma < 0.82)))
+    luminance_delta = sum(luminance_deltas) / max(len(luminance_deltas), 1)
+    ink_density_delta = sum(ink_deltas) / max(len(ink_deltas), 1)
+    score = max(0, round(100 - min(55, luminance_delta * 420) - min(25, ink_density_delta * 130)))
+    return {
+        "score": score,
+        "status": "pass" if score >= PASS_SCORE else "warning",
+        "luminanceDelta": round(luminance_delta, 4),
+        "inkDensityDelta": round(ink_density_delta, 4),
+        "sampleCount": len(luminance_deltas),
+        "grid": {"columns": columns, "rows": rows},
+    }
+
+
 def visual_layout_review(source: fitz.Document, result: fitz.Document) -> dict[str, Any]:
     """Review rendered page captures for defects that PDF object metrics miss.
 
@@ -327,6 +372,7 @@ def visual_layout_review(source: fitz.Document, result: fitz.Document) -> dict[s
         result_page = result[page_index]
         source_capture = source_page.get_pixmap(matrix=fitz.Matrix(VISUAL_REVIEW_SCALE, VISUAL_REVIEW_SCALE), colorspace=fitz.csRGB, alpha=False)
         result_capture = result_page.get_pixmap(matrix=fitz.Matrix(VISUAL_REVIEW_SCALE, VISUAL_REVIEW_SCALE), colorspace=fitz.csRGB, alpha=False)
+        capture_comparison = rendered_capture_comparison(source_page, result_page, source_capture, result_capture)
         source_blocks = text_blocks(source_page)
         result_blocks = text_blocks(result_page)
         result_spans = [span for block in result_blocks for span in block["spans"] if span.get("text", "").strip()]
@@ -379,7 +425,7 @@ def visual_layout_review(source: fitz.Document, result: fitz.Document) -> dict[s
                 page_issues.append({"type": "background-mismatch", "severity": "medium", "page": page_index + 1, "message": "Kaynakta açık olan metin alanına çıktı PDF’de koyu/gri bir arka plan kaplaması eklenmiş.", "rect": [round(value, 2) for value in (source_rect.x0, source_rect.y0, source_rect.x1, source_rect.y1)], "sourceLuminance": round(source_luma, 3), "resultLuminance": round(result_luma, 3)})
 
         page_score = max(0, 100 - min(60, background_mismatches * 12) - min(50, missing_regions * 20) - min(50, position_drifts * 10))
-        page_scores.append({"page": page_index + 1, "score": page_score, "backgroundMismatches": background_mismatches, "missingRegions": missing_regions, "positionDrifts": position_drifts, "issues": page_issues[:12], "capture": {"scale": VISUAL_REVIEW_SCALE, "width": source_capture.width, "height": source_capture.height}})
+        page_scores.append({"page": page_index + 1, "score": page_score, "backgroundMismatches": background_mismatches, "missingRegions": missing_regions, "positionDrifts": position_drifts, "issues": page_issues[:12], "capture": {"scale": VISUAL_REVIEW_SCALE, "width": source_capture.width, "height": source_capture.height}, "captureComparison": capture_comparison})
         issues.extend(page_issues)
 
     score = min([page["score"] for page in page_scores], default=0 if len(source) else 100)
@@ -395,6 +441,11 @@ def visual_layout_review(source: fitz.Document, result: fitz.Document) -> dict[s
         "backgroundMismatchCount": sum(page["backgroundMismatches"] for page in page_scores),
         "missingRegionCount": sum(page["missingRegions"] for page in page_scores),
         "positionDriftCount": sum(page["positionDrifts"] for page in page_scores),
+        "captureComparison": {
+            "score": min((page["captureComparison"]["score"] for page in page_scores), default=100 if len(source) == 0 else 0),
+            "status": "pass" if min((page["captureComparison"]["score"] for page in page_scores), default=100 if len(source) == 0 else 0) >= PASS_SCORE else "warning",
+            "pages": [page["captureComparison"] for page in page_scores],
+        },
     }
 
 
@@ -507,6 +558,178 @@ def block_geometry_review(source: fitz.Document, result: fitz.Document) -> dict[
         "overflowCount": overflow,
         "issues": issues[:80],
         "pageScores": page_scores,
+    }
+
+
+def block_geometry_review_strict(source: fitz.Document, result: fitz.Document) -> dict[str, Any]:
+    """Check source regions and result lines without trusting PDF block grouping.
+
+    PDF extraction may merge neighboring translated blocks or split one source
+    block into several result blocks. A one-to-one block rectangle comparison
+    therefore reports false failures on real forms. This pass matches each
+    source block to a result line in its safe render region, then checks all
+    result lines for overflow and actual collisions.
+    """
+    issues: list[dict[str, Any]] = []
+    page_scores: list[dict[str, Any]] = []
+    total_source = 0
+    total_result_lines = 0
+    matched = 0
+    missing = 0
+    position_drifts = 0
+    overlaps = 0
+    overflow = 0
+
+    for page_index in range(max(len(source), len(result))):
+        source_page = source[page_index] if page_index < len(source) else None
+        result_page = result[page_index] if page_index < len(result) else None
+        source_blocks = text_blocks(source_page) if source_page else []
+        result_blocks = text_blocks(result_page) if result_page else []
+        result_lines = [line for block in result_blocks for line in block.get("lineBoxes", [])]
+        result_lines.sort(key=lambda line: (fitz.Rect(line["rect"]).y0, fitz.Rect(line["rect"]).x0))
+        total_source += len(source_blocks)
+        total_result_lines += len(result_lines)
+        page_issues: list[dict[str, Any]] = []
+        used: set[int] = set()
+
+        if source_page is None or result_page is None:
+            page_issues.append({"type": "page-missing", "severity": "high", "page": page_index + 1, "message": "Source and result pages do not match."})
+
+        for source_block in source_blocks:
+            source_rect = fitz.Rect(source_block["rect"])
+            source_center = source_block["center"]
+            safe_rect = expanded_render_rect(source_block, source_blocks, source_page)
+            position_tolerance = max(18.0, source_rect.height * 2.5)
+            candidates = []
+            for line_index, line in enumerate(result_lines):
+                if line_index in used:
+                    continue
+                line_rect = fitz.Rect(line["rect"])
+                horizontal_overlap = max(0.0, min(safe_rect.x1, line_rect.x1) - max(safe_rect.x0, line_rect.x0)) / max(1.0, min(safe_rect.width, line_rect.width))
+                if horizontal_overlap < 0.08:
+                    continue
+                if line_rect.y1 < source_rect.y0 - position_tolerance or line_rect.y0 > safe_rect.y1 + position_tolerance:
+                    continue
+                line_center = ((line_rect.x0 + line_rect.x1) / 2, (line_rect.y0 + line_rect.y1) / 2)
+                distance = abs(line_center[1] - source_center[1]) + abs(line_center[0] - source_center[0]) * 0.15
+                outside_safe = 0 if safe_rect.contains(fitz.Point(*line_center)) else 100
+                candidates.append((outside_safe + distance, line_index, line_rect))
+            if not candidates:
+                missing += 1
+                page_issues.append({"type": "missing-block", "severity": "high", "page": page_index + 1, "message": "No result text line was found for a source text region.", "sourceRect": [round(value, 2) for value in (source_rect.x0, source_rect.y0, source_rect.x1, source_rect.y1)]})
+                continue
+            _, line_index, result_rect = min(candidates, key=lambda item: item[0])
+            used.add(line_index)
+            matched += 1
+            position_distance = abs(result_rect.y0 - source_rect.y0) + abs(result_rect.x0 - source_rect.x0) * 0.15
+            if position_distance > position_tolerance:
+                position_drifts += 1
+                page_issues.append({"type": "block-position-drift", "severity": "high", "page": page_index + 1, "message": "Result text moved too far from its source region.", "distance": round(position_distance, 2), "tolerance": round(position_tolerance, 2)})
+
+        def line_overlap_details(lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+            details: list[dict[str, Any]] = []
+            for left_index, left_line in enumerate(lines):
+                left_rect = fitz.Rect(left_line["rect"])
+                for right_line in lines[left_index + 1:]:
+                    right_rect = fitz.Rect(right_line["rect"])
+                    intersection = left_rect & right_rect
+                    if intersection.is_empty:
+                        continue
+                    horizontal_overlap = max(0.0, min(left_rect.x1, right_rect.x1) - max(left_rect.x0, right_rect.x0)) / max(1.0, min(left_rect.width, right_rect.width))
+                    vertical_overlap = max(0.0, min(left_rect.y1, right_rect.y1) - max(left_rect.y0, right_rect.y0)) / max(1.0, min(left_rect.height, right_rect.height))
+                    overlap_ratio = _intersection_ratio(left_rect, right_rect)
+                    if horizontal_overlap >= 0.25 and vertical_overlap >= 0.15 and overlap_ratio >= 0.03:
+                        details.append({"type": "line-overlap", "severity": "high", "page": page_index + 1, "message": "Two result text lines overlap.", "overlapRatio": round(overlap_ratio, 3)})
+            return details
+
+        source_lines = [line for block in source_blocks for line in block.get("lineBoxes", [])]
+        baseline_overlaps = line_overlap_details(source_lines)
+        result_overlap_details = line_overlap_details(result_lines)
+        new_overlap_details = result_overlap_details[len(baseline_overlaps):] if len(result_overlap_details) > len(baseline_overlaps) else []
+        overlaps += len(new_overlap_details)
+        page_issues.extend(new_overlap_details)
+
+        for left_index, left_line in enumerate(result_lines):
+            left_rect = fitz.Rect(left_line["rect"])
+            if result_page and (left_rect.x0 < result_page.rect.x0 - 1 or left_rect.y0 < result_page.rect.y0 - 1 or left_rect.x1 > result_page.rect.x1 + 1 or left_rect.y1 > result_page.rect.y1 + 1):
+                overflow += 1
+                page_issues.append({"type": "line-overflow", "severity": "high", "page": page_index + 1, "message": "Result text line overflowed the page bounds."})
+
+        page_score = max(0, 100 - min(60, sum(1 for issue in page_issues if issue["type"] == "missing-block") * 30) - min(45, position_drifts * 8) - min(70, len(new_overlap_details) * 35) - min(45, sum(1 for issue in page_issues if issue["type"] == "line-overflow") * 25))
+        page_scores.append({"page": page_index + 1, "score": page_score, "sourceBlocks": len(source_blocks), "resultBlocks": len(result_blocks), "resultLines": len(result_lines), "matchedBlocks": len(used), "unmatchedResultLines": max(0, len(result_lines) - len(used)), "baselineLineOverlapCount": len(baseline_overlaps), "lineOverlapCount": len(new_overlap_details), "issues": page_issues[:20]})
+        issues.extend(page_issues)
+
+    score = min((page["score"] for page in page_scores), default=100 if len(source) == 0 else 0)
+    return {
+        "score": score,
+        "status": "pass" if score >= PASS_SCORE else "fail",
+        "engine": "deterministic-source-region-line-geometry-review",
+        "sourceBlocks": total_source,
+        "resultBlocks": sum(page["resultBlocks"] for page in page_scores),
+        "resultLines": total_result_lines,
+        "matchedBlocks": matched,
+        "missingBlocks": missing,
+        "positionDrifts": position_drifts,
+        "overlapCount": overlaps,
+        "lineOverlapCount": overlaps,
+        "overflowCount": overflow,
+        "issues": issues[:80],
+        "pageScores": page_scores,
+    }
+
+
+def color_consistency_review(source: fitz.Document, result: fitz.Document) -> dict[str, Any]:
+    """Compare source/result text colors using positioned spans."""
+    comparisons: list[dict[str, Any]] = []
+    unmatched = 0
+    for page_index in range(min(len(source), len(result))):
+        source_page = source[page_index]
+        result_page = result[page_index]
+        source_blocks = text_blocks(source_page)
+        result_spans = [span for block in text_blocks(result_page) for span in block["spans"] if span.get("text", "").strip()]
+        used: set[int] = set()
+        for source_block in source_blocks:
+            source_span = source_block["spans"][0]
+            source_rect = fitz.Rect(source_span.get("bbox", source_block["rect"]))
+            safe_rect = expanded_render_rect(source_block, source_blocks, source_page)
+            candidates = []
+            for index, result_span in enumerate(result_spans):
+                if index in used:
+                    continue
+                result_rect = fitz.Rect(result_span.get("bbox", (0, 0, 0, 0)))
+                if result_rect.y1 < source_rect.y0 - max(18.0, source_rect.height * 2.5) or result_rect.y0 > safe_rect.y1:
+                    continue
+                result_center = ((result_rect.x0 + result_rect.x1) / 2, (result_rect.y0 + result_rect.y1) / 2)
+                source_center = ((source_rect.x0 + source_rect.x1) / 2, (source_rect.y0 + source_rect.y1) / 2)
+                distance = abs(result_center[1] - source_center[1]) + abs(result_center[0] - source_center[0]) * 0.15
+                candidates.append((distance, index, result_span))
+            if not candidates:
+                unmatched += 1
+                continue
+            _, index, result_span = min(candidates, key=lambda item: item[0])
+            used.add(index)
+            source_color = span_color(source_span)
+            result_color = span_color(result_span)
+            delta = max(abs(source_color[channel] - result_color[channel]) for channel in range(3))
+            comparisons.append({
+                "page": page_index + 1,
+                "sourceColor": [round(value, 3) for value in source_color],
+                "resultColor": [round(value, 3) for value in result_color],
+                "delta": round(delta, 4),
+                "match": delta <= 0.04,
+            })
+    total = len(comparisons) + unmatched
+    matches = sum(1 for item in comparisons if item["match"])
+    score = round(matches / max(total, 1) * 100)
+    return {
+        "score": score,
+        "status": "pass" if score >= PASS_SCORE else "fail",
+        "matchedBlocks": len(comparisons),
+        "unmatchedBlocks": unmatched,
+        "colorMatches": matches,
+        "colorMatchRate": round(matches / max(total, 1), 3),
+        "maxAllowedDelta": 0.04,
+        "mismatches": [item for item in comparisons if not item["match"]][:20],
     }
 
 
@@ -648,7 +871,9 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
     drawing_ratio = ratio(result_metrics["drawings"], source_metrics["drawings"]) if source_metrics["drawings"] else 1.0
     typography_match = typography_consistency(source, result)
     visual_review = visual_layout_review(source, result)
-    block_geometry = block_geometry_review(source, result)
+    block_geometry = block_geometry_review_strict(source, result)
+    color_consistency = color_consistency_review(source, result)
+    capture_comparison = visual_review.get("captureComparison", {"score": 0, "status": "fail", "pages": []})
     source_text_for_comparison = "\n".join(page.get_text("text") or "" for page in source)
     result_text_for_comparison = "\n".join(page.get_text("text") or "" for page in result)
     translation_text_similarity = round(difflib.SequenceMatcher(None, source_text_for_comparison, result_text_for_comparison, autojunk=False).ratio(), 3)
@@ -746,13 +971,15 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
         "typographyConsistency": {**typography_match, "status": "pass" if typography_match["score"] >= PASS_SCORE else "warning"},
         "visualAssets": {"score": visual_score, "status": "pass" if visual_score >= PASS_SCORE else "warning", "sourceImages": source_metrics["images"], "resultImages": result_metrics["images"], "sourceUniqueImages": source_metrics["uniqueImages"], "resultUniqueImages": result_metrics["uniqueImages"], "sourceDrawings": source_metrics["drawings"], "resultDrawings": result_metrics["drawings"], "imageRatio": image_ratio, "drawingRatio": drawing_ratio},
         "visualReview": visual_review,
+        "captureComparison": capture_comparison,
+        "colorConsistency": color_consistency,
         "blockGeometry": block_geometry,
         "layout": {"score": layout_score, "status": "pass" if layout_score >= PASS_SCORE else "warning", "sourceTextBlocks": source_metrics["textBlocks"], "resultTextBlocks": result_metrics["textBlocks"], "sourceLinks": source_metrics["links"], "resultLinks": result_metrics["links"], "sourceAnnotations": source_metrics["annotations"], "resultAnnotations": result_metrics["annotations"], "overflowPages": overflow_pages, "blankPages": sorted(set(blank_pages))},
     }
-    weighted_score = round((page_score * 0.18) + (text_score * 0.22) + (typography_score * 0.18) + (visual_score * 0.12) + (visual_review["score"] * 0.15) + (layout_score * 0.15))
+    weighted_score = round((page_score * 0.15) + (text_score * 0.20) + (typography_score * 0.15) + (color_consistency["score"] * 0.10) + (visual_score * 0.10) + (capture_comparison["score"] * 0.10) + (visual_review["score"] * 0.10) + (layout_score * 0.10))
     # A document is only as good as its weakest critical layer. This prevents
     # a high weighted average from hiding omitted text or broken layout.
-    score = max(0, min(100, weighted_score, page_score, text_score, typography_score, visual_score, visual_review["score"], block_geometry["score"], layout_score))
+    score = max(0, min(100, weighted_score, page_score, text_score, typography_score, color_consistency["score"], visual_score, capture_comparison["score"], visual_review["score"], block_geometry["score"], layout_score))
     return {
         "passed": score >= PASS_SCORE,
         "score": score,
@@ -1240,7 +1467,10 @@ def expanded_render_rect(block: dict[str, Any], blocks: list[dict[str, Any]], pa
     for other in blocks:
         other_rect = fitz.Rect(other["rect"])
         horizontal_overlap = max(0, min(rect.x1, other_rect.x1) - max(rect.x0, other_rect.x0))
-        if other_rect.y0 > rect.y1 and horizontal_overlap >= rect.width * 0.2:
+        # Reserve the space up to the next same-column block, even when the
+        # source blocks touch on their baseline. Using rect.y1 here lets a
+        # re-rendered long line wrap into the following paragraph.
+        if other_rect.y0 > rect.y0 + 0.5 and horizontal_overlap >= rect.width * 0.2:
             candidates.append(other_rect.y0)
     bottom = min(candidates, default=page.rect.y1) - 1
     return fitz.Rect(rect.x0, rect.y0, rect.x1, max(rect.y1, bottom))
@@ -1294,11 +1524,15 @@ def translation_quality_gate(report: dict[str, Any]) -> bool:
     layers = report.get("qualityLayers", {})
     block_layer = layers.get("blockGeometry")
     visual_layer = layers.get("visualReview")
+    color_layer = layers.get("colorConsistency")
+    capture_layer = layers.get("captureComparison")
     return (
         report.get("score", 0) >= PASS_SCORE
         and page_integrity_preserved(report)
         and (block_layer is None or block_layer.get("score", 0) >= PASS_SCORE)
         and (visual_layer is None or visual_layer.get("score", 0) >= PASS_SCORE)
+        and (color_layer is None or color_layer.get("score", 0) >= PASS_SCORE)
+        and (capture_layer is None or capture_layer.get("score", 0) >= PASS_SCORE)
     )
 
 
@@ -1313,9 +1547,12 @@ def render_preserved_layout(source_bytes: bytes, translations: dict[str, str]) -
         candidate = {"output": output, "render": render_details, "report": report, "scale": scale}
         candidates.append(candidate)
         complete = render_details.get("missingBlocks", 0) == 0 and render_details.get("failedBlocks", 0) == 0
-        if shrink == 0 and complete and translation_quality_gate(report):
-            break
-        if shrink > 0 and complete and translation_quality_gate(report):
+        geometry_score = report.get("qualityLayers", {}).get("blockGeometry", {}).get("score", PASS_SCORE)
+        # Once the source-region geometry is sound, shrinking cannot repair a
+        # font/color/capture mismatch and only repeats an expensive full-page
+        # raster inspection. Retry only when the layout layer itself needs it.
+        layout_is_sound = page_integrity_preserved(report) and geometry_score >= PASS_SCORE
+        if complete and (translation_quality_gate(report) or layout_is_sound):
             break
     best = max(
         candidates,

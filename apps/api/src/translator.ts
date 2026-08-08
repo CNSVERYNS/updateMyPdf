@@ -74,11 +74,14 @@ class AzureTranslator implements DocumentTranslator {
   }
 
   private async qualityServiceRequest(pathname: string, form: FormData) {
+    const url = `${this.config.PDF_QUALITY_SERVICE_URL.replace(/\/$/, '')}${pathname}`
+    const startedAt = Date.now()
     try {
-      const response = await fetch(`${this.config.PDF_QUALITY_SERVICE_URL.replace(/\/$/, '')}${pathname}`, { method: 'POST', body: form, signal: AbortSignal.timeout(Math.min(this.config.AZURE_REQUEST_TIMEOUT_MS, 30000)) })
+      const response = await fetch(url, { method: 'POST', body: form, redirect: 'error', signal: AbortSignal.timeout(this.config.PDF_QUALITY_REQUEST_TIMEOUT_MS) })
       if (!response.ok) throw Object.assign(new Error(`PDF preserve service ${response.status}`), { code: 'PDF_PRESERVE_SERVICE_FAILED', status: response.status })
       return response
     } catch (error) {
+      console.error(JSON.stringify({ event: 'pdf_quality_request_failed', path: pathname, elapsedMs: Date.now() - startedAt, error: error instanceof Error ? error.message : String(error) }))
       if ((error as any)?.code === 'PDF_PRESERVE_SERVICE_FAILED') throw error
       throw Object.assign(new Error('PDF preserve service unavailable'), { code: 'PDF_PRESERVE_SERVICE_FAILED', cause: error })
     }

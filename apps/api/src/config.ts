@@ -42,6 +42,7 @@ const envSchema = z.object({
   FILE_RETENTION_HOURS: z.coerce.number().positive().default(24),
   AZURE_MAX_RETRIES: z.coerce.number().int().nonnegative().default(5),
   AZURE_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(60000),
+  PDF_QUALITY_REQUEST_TIMEOUT_MS: z.coerce.number().int().positive().default(180000),
   AZURE_JOB_TIMEOUT_MINUTES: z.coerce.number().positive().default(30),
   PDF_QUALITY_SERVICE_URL: z.string().url().default('http://localhost:8000'),
   OPENAI_API_KEY: optionalString,

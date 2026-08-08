@@ -7,7 +7,7 @@ import type { StorageAdapter } from './storage.js'
 import type { DocumentTranslator } from './translator.js'
 import type { UsageRepository } from './usage.js'
 import { inspectQuality, repairVisualAssets } from './quality.js'
-import { profileVisualDocument } from './visual-review.js'
+import { profileVisualDocument, reviewTranslatedVisualDocument } from './visual-review.js'
 import { assertTransition } from './domain.js'
 import { hashBytes, isEncryptedPdf, safeStorageName } from './security.js'
 
@@ -85,6 +85,8 @@ export class JobService {
       await this.repo.update(job.id, { currentStage: 'translation_started', progress: 45 })
       const result = await this.translator.translatePdfPreservingLayout({ bytes: source, sourceLanguage: job.sourceLanguage, targetLanguage: job.targetLanguage })
       await this.repo.update(job.id, { currentStage: 'downloading', progress: 82 })
+      const outputVisualComparison = await reviewTranslatedVisualDocument(this.config, source, result, async (event) => { await this.usage?.record(event) })
+      this.visualProfiles.set(job.id, { ...visualProfile, outputComparison: outputVisualComparison })
       await this.storage.upload(this.config.AZURE_STORAGE_TARGET_CONTAINER, job.targetBlobName!, result, job.sourceMimeType)
       await this.repo.recordFile({ jobId: job.id, role: 'target', blobName: job.targetBlobName!, mimeType: job.sourceMimeType, sizeBytes: result.length, sha256: hashBytes(result) })
       await this.finish(job.id, source, result)
