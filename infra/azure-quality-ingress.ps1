@@ -16,3 +16,11 @@ az containerapp ingress enable `
   --allow-insecure true `
   --target-port 8000 `
   --transport http
+
+# Keep one worker available for health probes while the other performs the
+# CPU-heavy PDF capture comparison.
+az containerapp update `
+  --name $QualityApp `
+  --resource-group $ResourceGroup `
+  --cpu 1 `
+  --memory 2Gi

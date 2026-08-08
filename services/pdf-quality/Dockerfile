@@ -12,4 +12,4 @@ ENV MIN_ACCEPTABLE_FONT_SIZE=5
 ENV QUALITY_PASS_SCORE=90
 ENV QUALITY_WARNING_SCORE=70
 EXPOSE 8000
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]

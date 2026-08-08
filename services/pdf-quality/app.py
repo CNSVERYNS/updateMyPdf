@@ -980,6 +980,8 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
     # A document is only as good as its weakest critical layer. This prevents
     # a high weighted average from hiding omitted text or broken layout.
     score = max(0, min(100, weighted_score, page_score, text_score, typography_score, color_consistency["score"], visual_score, capture_comparison["score"], visual_review["score"], block_geometry["score"], layout_score))
+    source.close()
+    result.close()
     return {
         "passed": score >= PASS_SCORE,
         "score": score,
@@ -1539,13 +1541,31 @@ def translation_quality_gate(report: dict[str, Any]) -> bool:
 def render_preserved_layout(source_bytes: bytes, translations: dict[str, str]) -> tuple[bytes, dict[str, Any]]:
     """Render candidates and progressively shrink all text only when layout breaks."""
     shrink_steps = [0.00, 0.03, 0.05, 0.07, 0.10, 0.14, 0.18, 0.22, 0.27, 0.32]
-    candidates: list[dict[str, Any]] = []
+    best: dict[str, Any] | None = None
+    candidate_scores: list[dict[str, Any]] = []
     for shrink in shrink_steps:
         scale = round(1 - shrink, 3)
         output, render_details = render_preserved_layout_candidate(source_bytes, translations, scale)
         report = inspect_documents(source_bytes, output)
         candidate = {"output": output, "render": render_details, "report": report, "scale": scale}
-        candidates.append(candidate)
+        candidate_scores.append({"scale": scale, "score": report["score"], "pageIntegrity": page_integrity_preserved(report), "missingBlocks": render_details.get("missingBlocks", 0), "failedBlocks": render_details.get("failedBlocks", 0)})
+        candidate_key = (
+            1 if render_details.get("missingBlocks", 0) == 0 and render_details.get("failedBlocks", 0) == 0 else 0,
+            1 if page_integrity_preserved(report) else 0,
+            report["score"],
+            scale,
+        )
+        if best is None or candidate_key > (
+            1 if best["render"].get("missingBlocks", 0) == 0 and best["render"].get("failedBlocks", 0) == 0 else 0,
+            1 if page_integrity_preserved(best["report"]) else 0,
+            best["report"]["score"],
+            best["scale"],
+        ):
+            best = candidate
+        else:
+            # Do not retain every full PDF candidate while the expensive
+            # raster inspection is running on a dense vector form.
+            del output
         complete = render_details.get("missingBlocks", 0) == 0 and render_details.get("failedBlocks", 0) == 0
         geometry_score = report.get("qualityLayers", {}).get("blockGeometry", {}).get("score", PASS_SCORE)
         # Once the source-region geometry is sound, shrinking cannot repair a
@@ -1554,28 +1574,17 @@ def render_preserved_layout(source_bytes: bytes, translations: dict[str, str]) -
         layout_is_sound = page_integrity_preserved(report) and geometry_score >= PASS_SCORE
         if complete and (translation_quality_gate(report) or layout_is_sound):
             break
-    best = max(
-        candidates,
-        key=lambda candidate: (
-            1 if candidate["render"].get("missingBlocks", 0) == 0 and candidate["render"].get("failedBlocks", 0) == 0 else 0,
-            1 if page_integrity_preserved(candidate["report"]) else 0,
-            candidate["report"]["score"],
-            candidate["scale"],
-        ),
-    )
+    assert best is not None
     details = {
         **best["render"],
-        "attempts": len(candidates),
-        "attemptedScales": [candidate["scale"] for candidate in candidates],
+        "attempts": len(candidate_scores),
+        "attemptedScales": [candidate["scale"] for candidate in candidate_scores],
         "selectedScale": best["scale"],
         "shrinkPercent": round((1 - best["scale"]) * 100, 1),
         "selectedQualityScore": best["report"]["score"],
         "pageIntegrityPreserved": page_integrity_preserved(best["report"]),
         "qualityGatePassed": translation_quality_gate(best["report"]),
-        "candidateScores": [
-            {"scale": candidate["scale"], "score": candidate["report"]["score"], "pageIntegrity": page_integrity_preserved(candidate["report"]), "missingBlocks": candidate["render"].get("missingBlocks", 0), "failedBlocks": candidate["render"].get("failedBlocks", 0)}
-            for candidate in candidates
-        ],
+        "candidateScores": candidate_scores,
     }
     return best["output"], details
 
