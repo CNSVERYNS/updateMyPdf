@@ -164,6 +164,26 @@ def test_frame_regions_and_contained_text_pass_when_preserved():
     assert regions["bottomOverflows"] == 0
 
 
+def test_redaction_fill_is_not_reported_as_a_new_checkbox_region():
+    source_document = fitz.open()
+    source_page = source_document.new_page(width=300, height=400)
+    source_page.insert_text((40, 60), "Source text")
+    source = source_document.tobytes()
+    source_document.close()
+
+    result_document = fitz.open(stream=source, filetype="pdf")
+    result_page = result_document[0]
+    result_page.add_redact_annot(fitz.Rect(38, 48, 110, 65), fill=(1, 1, 1))
+    result_page.apply_redactions(images=0, graphics=0, text=0)
+    result = result_document.tobytes()
+    result_document.close()
+
+    result_document = fitz.open(stream=result, filetype="pdf")
+    regions = quality_app.layout_regions(result_document[0])
+    assert regions == []
+    result_document.close()
+
+
 def test_frame_region_reports_horizontal_alignment_drift():
     source_document = fitz.open()
     source_page = source_document.new_page(width=300, height=400)

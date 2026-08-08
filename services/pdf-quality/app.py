@@ -578,6 +578,14 @@ def layout_regions(page: fitz.Page) -> list[dict[str, Any]]:
     for drawing in page.get_drawings():
         for item in drawing.get("items", []):
             if item and item[0] == "re" and len(item) > 1:
+                # PyMuPDF materializes a text redaction as a white filled and
+                # white stroked rectangle. It is a canvas repair operation,
+                # not a source checkbox/frame and must not enter geometry or
+                # line-overlap review as a new visual region.
+                fill = drawing.get("fill")
+                stroke = drawing.get("color")
+                if fill is not None and stroke is not None and _style_color_delta(fill, stroke) is not None and _style_color_delta(fill, stroke) <= 0.01:
+                    continue
                 try:
                     rect = fitz.Rect(item[1])
                 except Exception:
@@ -894,17 +902,25 @@ def _line_text_overlap_details(page: fitz.Page) -> list[dict[str, Any]]:
             else:
                 continue
             for block_index, block in enumerate(blocks):
-                text_rect = fitz.Rect(block["rect"])
-                if line_type == "vertical":
-                    intersects = line.x0 >= text_rect.x0 - 1.5 and line.x0 <= text_rect.x1 + 1.5 and line.y1 >= text_rect.y0 and line.y0 <= text_rect.y1
-                else:
-                    intersects = line.y0 >= text_rect.y0 - 1.5 and line.y0 <= text_rect.y1 + 1.5 and line.x1 >= text_rect.x0 and line.x0 <= text_rect.x1
-                if intersects:
+                # A redacted/re-rendered PDF can merge neighboring source
+                # blocks into one extraction block. Use the actual line
+                # boxes for collision evidence; the union of the merged
+                # block would falsely report distant text as crossing a line.
+                line_entries = block.get("lineBoxes") or [{"rect": block["rect"], "lineIndex": 0}]
+                for line_index, line_entry in enumerate(line_entries):
+                    text_rect = fitz.Rect(line_entry["rect"])
+                    if line_type == "vertical":
+                        intersects = line.x0 >= text_rect.x0 - 1.5 and line.x0 <= text_rect.x1 + 1.5 and line.y1 >= text_rect.y0 and line.y0 <= text_rect.y1
+                    else:
+                        intersects = line.y0 >= text_rect.y0 - 1.5 and line.y0 <= text_rect.y1 + 1.5 and line.x1 >= text_rect.x0 and line.x0 <= text_rect.x1
+                    if not intersects:
+                        continue
                     details.append({
                         "type": f"{line_type}-line-text-overlap",
                         "lineRect": [round(value, 2) for value in line],
                         "textRect": [round(value, 2) for value in text_rect],
                         "blockIndex": block_index,
+                        "lineIndex": line_index,
                     })
 
     for region_index, region in enumerate(layout_regions(page)):
