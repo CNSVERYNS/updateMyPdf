@@ -460,6 +460,33 @@ def _intersection_ratio(left: fitz.Rect, right: fitz.Rect) -> float:
     return _rect_area(intersection) / max(1.0, min(_rect_area(left), _rect_area(right)))
 
 
+def _region_padding(region: fitz.Rect, text: fitz.Rect) -> dict[str, float]:
+    return {
+        "left": round(text.x0 - region.x0, 2),
+        "top": round(text.y0 - region.y0, 2),
+        "right": round(region.x1 - text.x1, 2),
+        "bottom": round(region.y1 - text.y1, 2),
+    }
+
+
+def _region_axis_alignment(region: fitz.Rect, text: fitz.Rect, axis: str) -> tuple[str, float]:
+    if axis == "x":
+        start = text.x0 - region.x0
+        end = region.x1 - text.x1
+        span = max(1.0, region.width)
+        center = ((text.x0 + text.x1) / 2) - ((region.x0 + region.x1) / 2)
+    else:
+        start = text.y0 - region.y0
+        end = region.y1 - text.y1
+        span = max(1.0, region.height)
+        center = ((text.y0 + text.y1) / 2) - ((region.y0 + region.y1) / 2)
+    if start <= end - max(3.0, span * 0.03):
+        return "start", start
+    if end <= start - max(3.0, span * 0.03):
+        return "end", end
+    return "center", center
+
+
 def _line_rect(item: tuple[Any, ...]) -> fitz.Rect | None:
     if not item or item[0] != "l" or len(item) < 3:
         return None
@@ -551,6 +578,10 @@ def region_geometry_review(source: fitz.Document, result: fitz.Document) -> dict
     geometry_drifts = 0
     content_overflows = 0
     matched_regions = 0
+    padding_drifts = 0
+    alignment_drifts = 0
+    line_collisions = 0
+    bottom_overflows = 0
 
     for page_index in range(max(len(source), len(result))):
         source_page = source[page_index] if page_index < len(source) else None
@@ -636,6 +667,8 @@ def region_geometry_review(source: fitz.Document, result: fitz.Document) -> dict
                     or result_block_rect.y1 > result_rect.y1 + tolerance
                 ):
                     content_overflows += 1
+                    if result_block_rect.y1 > result_rect.y1 + tolerance:
+                        bottom_overflows += 1
                     page_issues.append({
                         "criterion": "QC-GEO-009",
                         "type": "region-content-overflow",
@@ -647,7 +680,107 @@ def region_geometry_review(source: fitz.Document, result: fitz.Document) -> dict
                         "message": "Kutu/frame içindeki metin bölge sınırlarının dışına taştı.",
                     })
 
-        page_score = max(0, 100 - min(60, len([issue for issue in page_issues if issue["type"] == "region-missing"]) * 30) - min(50, len([issue for issue in page_issues if issue["type"] == "region-geometry-drift"]) * 20) - min(60, len([issue for issue in page_issues if issue["type"] == "region-content-overflow"]) * 30))
+                source_text_rect = fitz.Rect(block["rect"])
+                source_padding = _region_padding(source_rect, source_text_rect)
+                result_padding = _region_padding(result_rect, result_block_rect)
+                padding_tolerance = max(2.0, min(source_rect.width, source_rect.height) * 0.03)
+                reduced_padding = {
+                    side: round(source_padding[side] - result_padding[side], 2)
+                    for side in ("left", "top", "right", "bottom")
+                    if source_padding[side] - result_padding[side] > padding_tolerance
+                }
+                if reduced_padding:
+                    padding_drifts += 1
+                    page_issues.append({
+                        "criterion": "QC-GEO-010",
+                        "type": "region-padding-drift",
+                        "severity": "medium",
+                        "page": page_index + 1,
+                        "regionIndex": source_index,
+                        "sourcePadding": source_padding,
+                        "resultPadding": result_padding,
+                        "reducedSides": reduced_padding,
+                        "message": "Region text padding decreased beyond tolerance.",
+                    })
+
+                for axis, criterion in (("x", "QC-GEO-012"), ("y", "QC-GEO-011")):
+                    source_mode, source_anchor = _region_axis_alignment(source_rect, source_text_rect, axis)
+                    result_mode, result_anchor = _region_axis_alignment(result_rect, result_block_rect, axis)
+                    axis_size = source_rect.width if axis == "x" else source_rect.height
+                    axis_tolerance = max(4.0, axis_size * 0.04)
+                    mode_changed = source_mode != result_mode and source_mode != "center" and result_mode != "center"
+                    anchor_drift = abs(result_anchor - source_anchor)
+                    if mode_changed or anchor_drift > axis_tolerance:
+                        alignment_drifts += 1
+                        page_issues.append({
+                            "criterion": criterion,
+                            "type": "region-alignment-drift",
+                            "severity": "medium",
+                            "page": page_index + 1,
+                            "regionIndex": source_index,
+                            "axis": "horizontal" if axis == "x" else "vertical",
+                            "sourceMode": source_mode,
+                            "resultMode": result_mode,
+                            "sourceAnchor": round(source_anchor, 2),
+                            "resultAnchor": round(result_anchor, 2),
+                            "tolerance": round(axis_tolerance, 2),
+                            "message": "Region text alignment drifted beyond tolerance.",
+                        })
+
+                source_line_boxes: list[dict[str, Any]] = []
+                for line in block.get("lineBoxes", []):
+                    line_rect = fitz.Rect(line["rect"])
+                    line_center = fitz.Point((line_rect.x0 + line_rect.x1) / 2, (line_rect.y0 + line_rect.y1) / 2)
+                    if source_rect.contains(line_center):
+                        source_line_boxes.append(line)
+                result_line_boxes: list[dict[str, Any]] = []
+                for line in result_block.get("lineBoxes", []):
+                    line_rect = fitz.Rect(line["rect"])
+                    line_center = fitz.Point((line_rect.x0 + line_rect.x1) / 2, (line_rect.y0 + line_rect.y1) / 2)
+                    if result_rect.contains(line_center):
+                        result_line_boxes.append(line)
+                def has_line_overlap(lines: list[dict[str, Any]]) -> int:
+                    overlaps = 0
+                    for left_index, left_line in enumerate(lines):
+                        left_line_rect = fitz.Rect(left_line["rect"])
+                        for right_line in lines[left_index + 1:]:
+                            right_line_rect = fitz.Rect(right_line["rect"])
+                            if not (left_line_rect & right_line_rect).is_empty and _intersection_ratio(left_line_rect, right_line_rect) >= 0.03:
+                                overlaps += 1
+                    return overlaps
+
+                additional_line_collisions = max(0, has_line_overlap(result_line_boxes) - has_line_overlap(source_line_boxes))
+                for left_index, left_line in enumerate(result_line_boxes):
+                    left_line_rect = fitz.Rect(left_line["rect"])
+                    for right_line in result_line_boxes[left_index + 1:]:
+                        right_line_rect = fitz.Rect(right_line["rect"])
+                        if additional_line_collisions > 0 and not (left_line_rect & right_line_rect).is_empty and _intersection_ratio(left_line_rect, right_line_rect) >= 0.03:
+                            line_collisions += 1
+                            additional_line_collisions -= 1
+                            page_issues.append({
+                                "criterion": "QC-GEO-013",
+                                "type": "region-line-overlap",
+                                "severity": "high",
+                                "page": page_index + 1,
+                                "regionIndex": source_index,
+                                "leftRect": [round(value, 2) for value in left_line_rect],
+                                "rightRect": [round(value, 2) for value in right_line_rect],
+                                "message": "Text lines overlap inside a region.",
+                            })
+
+                if result_block_rect.y1 > result_rect.y1 + tolerance:
+                    page_issues.append({
+                        "criterion": "QC-GEO-014",
+                        "type": "region-last-line-overflow",
+                        "severity": "high",
+                        "page": page_index + 1,
+                        "regionIndex": source_index,
+                        "resultTextRect": [round(value, 2) for value in result_block_rect],
+                        "regionRect": [round(value, 2) for value in result_rect],
+                        "message": "The last text line crossed the region bottom edge.",
+                    })
+
+        page_score = max(0, 100 - min(60, len([issue for issue in page_issues if issue["type"] == "region-missing"]) * 30) - min(50, len([issue for issue in page_issues if issue["type"] == "region-geometry-drift"]) * 20) - min(60, len([issue for issue in page_issues if issue["type"] == "region-content-overflow"]) * 30) - min(20, len([issue for issue in page_issues if issue["type"] == "region-padding-drift"]) * 2) - min(20, len([issue for issue in page_issues if issue["type"] == "region-alignment-drift"]) * 4) - min(60, len([issue for issue in page_issues if issue["type"] == "region-line-overlap"]) * 30))
         page_scores.append({
             "page": page_index + 1,
             "score": page_score,
@@ -669,6 +802,10 @@ def region_geometry_review(source: fitz.Document, result: fitz.Document) -> dict
         "missingRegions": missing,
         "geometryDrifts": geometry_drifts,
         "contentOverflows": content_overflows,
+        "paddingDrifts": padding_drifts,
+        "alignmentDrifts": alignment_drifts,
+        "lineCollisions": line_collisions,
+        "bottomOverflows": bottom_overflows,
         "issues": issues[:80],
         "pageScores": page_scores,
     }

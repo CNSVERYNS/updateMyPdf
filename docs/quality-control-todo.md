@@ -58,11 +58,11 @@ Kural: Bir kriter kodu tamamlanmadan “tamamlandı” işaretlenmez. Kalite kap
 - [x] QC-GEO-007: Vector rectangle/box/frame bölgeleri çıkarılmalı.
 - [x] QC-GEO-008: Frame sınırları kaynak/result koordinat bazında eşleşmeli.
 - [x] QC-GEO-009: Frame içindeki text’in frame sınırları dışına çıkması reddedilmeli.
-- [ ] QC-GEO-010: Kutu içi padding/top/left/right/bottom korunmalı.
-- [ ] QC-GEO-011: Kutu içinde text’in dikey hizası korunmalı.
-- [ ] QC-GEO-012: Kutu içinde text’in yatay hizası korunmalı.
-- [ ] QC-GEO-013: Kutu içinde çok satırlı baseline aralığı çakışmamalı.
-- [ ] QC-GEO-014: Kutu içinde son satır alt sınıra taşmamalı.
+- [x] QC-GEO-010: Kutu içi padding/top/left/right/bottom korunmalı.
+- [x] QC-GEO-011: Kutu içinde text’in dikey hizası korunmalı.
+- [x] QC-GEO-012: Kutu içinde text’in yatay hizası korunmalı.
+- [x] QC-GEO-013: Kutu içinde çok satırlı baseline aralığı çakışmamalı.
+- [x] QC-GEO-014: Kutu içinde son satır alt sınıra taşmamalı.
 - [ ] QC-GEO-015: Kutu içinde Türkçe uzama için yalnız ilgili bölge fit edilmeli.
 - [ ] QC-GEO-016: Frame dışındaki metin frame içine taşmamalı.
 - [ ] QC-GEO-017: Frame içindeki metin başka frame alanına taşmamalı.

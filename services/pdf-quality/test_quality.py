@@ -136,6 +136,31 @@ def test_frame_regions_and_contained_text_pass_when_preserved():
     assert regions["score"] == 100
     assert regions["matchedRegions"] >= 1
     assert regions["contentOverflows"] == 0
+    assert regions["paddingDrifts"] == 0
+    assert regions["alignmentDrifts"] == 0
+    assert regions["lineCollisions"] == 0
+    assert regions["bottomOverflows"] == 0
+
+
+def test_frame_region_reports_horizontal_alignment_drift():
+    source_document = fitz.open()
+    source_page = source_document.new_page(width=300, height=400)
+    frame = fitz.Rect(30, 30, 240, 130)
+    source_page.draw_rect(frame, color=(0, 0, 0), width=1)
+    source_page.insert_textbox(fitz.Rect(42, 42, 228, 118), "Text inside a preserved form frame.", fontsize=11)
+    source = source_document.tobytes()
+    source_document.close()
+
+    result_document = fitz.open()
+    result_page = result_document.new_page(width=300, height=400)
+    result_page.draw_rect(frame, color=(0, 0, 0), width=1)
+    result_page.insert_textbox(fitz.Rect(90, 42, 228, 118), "Translated text moved right.", fontsize=11)
+    result = result_document.tobytes()
+    result_document.close()
+
+    report = region_geometry_review(fitz.open(stream=source, filetype="pdf"), fitz.open(stream=result, filetype="pdf"))
+    assert report["alignmentDrifts"] >= 1
+    assert any(issue["criterion"] == "QC-GEO-012" for issue in report["issues"])
 
 
 def test_frame_region_rejects_text_that_escapes_the_frame():
