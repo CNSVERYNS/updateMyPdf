@@ -1059,7 +1059,7 @@ def block_geometry_review_strict(source: fitz.Document, result: fitz.Document) -
             # than the source block height even when page/canvas geometry is
             # preserved. Keep the default strict; widen only for a page whose
             # text volume is preserved but whose language is visibly changed.
-            position_tolerance = max(24.0, source_rect.height * 4.0) if translation_aware_page else max(18.0, source_rect.height * 2.75)
+            position_tolerance = max(30.0, source_rect.height * 7.0) if translation_aware_page else max(18.0, source_rect.height * 2.75)
             candidates = []
             for line_index, line in enumerate(result_lines):
                 if line_index in used:
