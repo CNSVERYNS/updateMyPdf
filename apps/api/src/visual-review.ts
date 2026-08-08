@@ -39,6 +39,54 @@ const jsonFromModelText = (value: string): Record<string, unknown> | null => {
   }
 }
 
+const criterionForIssue = (type: string): string => {
+  const normalized = type.toLocaleLowerCase()
+  if (normalized.includes('clip') || normalized.includes('overflow')) return 'QC-GEO-004'
+  if (normalized.includes('overlap')) return 'QC-GEO-003'
+  if (normalized.includes('vertical') || normalized.includes('y_axis') || normalized.includes('y-axis')) return 'QC-VIS-006'
+  if (normalized.includes('horizontal') || normalized.includes('x_axis') || normalized.includes('x-axis')) return 'QC-VIS-007'
+  if (normalized.includes('frame') || normalized.includes('box') || normalized.includes('padding')) return 'QC-GEO-010'
+  if (normalized.includes('column') || normalized.includes('gutter')) return 'QC-GEO-025'
+  if (normalized.includes('table') || normalized.includes('cell')) return 'QC-GEO-021'
+  if (normalized.includes('heading') || normalized.includes('subheading')) return 'QC-TYP-014'
+  if (normalized.includes('font') || normalized.includes('shrink') || normalized.includes('readab')) return 'QC-TYP-022'
+  if (normalized.includes('color') || normalized.includes('colour') || normalized.includes('stroke') || normalized.includes('border')) return 'QC-COL-004'
+  if (normalized.includes('image') || normalized.includes('logo') || normalized.includes('artwork')) return 'QC-VIS-014'
+  if (normalized.includes('spacing') || normalized.includes('baseline')) return 'QC-TYP-011'
+  if (normalized.includes('align') || normalized.includes('layout') || normalized.includes('shift')) return 'QC-GEO-001'
+  return 'QC-VIS-021'
+}
+
+const normalizedVisualReview = (parsed: Record<string, unknown> | null): Record<string, unknown> | null => {
+  if (!parsed) return null
+  const pages = Array.isArray(parsed.pages) ? parsed.pages : []
+  const normalizedPages = pages.map((pageValue) => {
+    const page = pageValue && typeof pageValue === 'object' ? pageValue as Record<string, unknown> : {}
+    const issues = Array.isArray(page.issues) ? page.issues : []
+    const normalizedIssues = issues.map((issueValue) => {
+      const issue = issueValue && typeof issueValue === 'object' ? issueValue as Record<string, unknown> : { description: String(issueValue) }
+      const type = typeof issue.type === 'string' ? issue.type : 'visual_difference'
+      const requestedCriterion = typeof issue.criterion === 'string' && /^QC-[A-Z]+-\d{3}$/.test(issue.criterion) ? issue.criterion : null
+      const severityValue = typeof issue.severity === 'string' ? issue.severity.toLocaleLowerCase() : ''
+      const structural = /clip|overflow|overlap|missing|column|table|frame|box/i.test(type)
+      const severity = ['critical', 'high', 'medium', 'minor'].includes(severityValue) ? severityValue : structural ? 'high' : 'minor'
+      return {
+        ...issue,
+        type,
+        criterion: requestedCriterion || criterionForIssue(type),
+        severity,
+        evidence: issue.evidence ?? issue.rect ?? issue.bbox ?? null,
+        page: issue.page ?? page.page ?? null,
+      }
+    })
+    return { ...page, issues: normalizedIssues }
+  })
+  const allIssues = normalizedPages.flatMap((page) => Array.isArray(page.issues) ? page.issues as Array<Record<string, unknown>> : [])
+  const hardFailure = allIssues.some((issue) => issue.severity === 'critical' || issue.severity === 'high')
+  const status = hardFailure ? 'hard_fail' : allIssues.length ? 'manual_review' : 'pass'
+  return { ...parsed, status, pages: normalizedPages, issues: allIssues }
+}
+
 const modelOutputText = (response: any) => {
   if (typeof response?.output_text === 'string') return response.output_text
   return (response?.output || [])
@@ -62,8 +110,8 @@ const runVisionReview = async (config: AppConfig, profile: VisualProfile, record
     type: 'input_text',
     text: [
       'You are a conservative PDF visual-layout reviewer.',
-      'Inspect each page image for orphan bullets, sentences beginning in the middle of a line, clipped text, overlaps, unreadable font shrinkage, broken columns, and missing artwork.',
-      'Return JSON only with documentStrategy, confidence, pages, and issues. Allowed strategies: preserve_canvas, reflow_text_columns, ocr_first, block_replace, manual_review.',
+      'Inspect these criteria independently: vertical/y-axis edge continuity, horizontal/x-axis edge continuity, frame/box borders and padding, text crossing lines, checkbox/radio labels, columns and gutters, tables/cells, heading/subheading hierarchy, font readability, colors, and missing artwork.',
+      'Return JSON only with documentStrategy, confidence, pages, and issues. Each issue must include criterion (QC-* code), type, severity (critical/high/medium/minor), description, and evidence with page plus approximate rect when visible. Allowed statuses: pass, manual_review, hard_fail.',
       'Do not invent missing text. If uncertain, use manual_review.',
     ].join(' '),
   }]
@@ -82,7 +130,8 @@ const runVisionReview = async (config: AppConfig, profile: VisualProfile, record
   const modelUsage = payload.usage as Record<string, unknown> | undefined
   await recordUsage?.({ provider: 'openai', service: 'responses', eventType: 'visual_review', externalId: typeof payload.id === 'string' ? payload.id : null, idempotencyKey: typeof payload.id === 'string' ? `openai:${payload.id}` : undefined, inputUnits: modelUsage?.input_tokens == null ? null : Number(modelUsage.input_tokens), outputUnits: modelUsage?.output_tokens == null ? null : Number(modelUsage.output_tokens), unitName: 'tokens', metadata: { model: config.OPENAI_MODEL, reviewedPages: pages.length } })
   const parsed = jsonFromModelText(modelOutputText(payload))
-  return { status: parsed ? 'completed' : 'invalid_model_output', model: config.OPENAI_MODEL, result: parsed, strategySource: 'openai-vision' }
+  const normalized = normalizedVisualReview(parsed)
+  return { status: normalized ? 'completed' : 'invalid_model_output', model: config.OPENAI_MODEL, result: normalized, strategySource: 'openai-vision' }
 }
 
 const fetchVisualProfileWithCaptures = async (config: AppConfig, bytes: Buffer): Promise<VisualProfile> => {
@@ -104,8 +153,8 @@ const runVisionComparison = async (config: AppConfig, source: VisualProfile, tra
     text: [
       'You are a conservative PDF visual comparison reviewer.',
       'Compare each SOURCE page capture with its TRANSLATED page capture.',
-      'Check page whole-structure preservation, clipped or overlapping text, unreadable font shrinkage, column movement, missing artwork, and incorrect colors.',
-      'Return JSON only with status, confidence, pages, and issues. Use status pass only when the translated page is visually safe; otherwise use manual_review.',
+      'Check independently: vertical/y-axis continuity, horizontal/x-axis continuity, frame/box edge continuity, inside-region padding, text-line overlap, checkbox/radio label overlap, columns and gutters, table cells, heading/subheading hierarchy, font size versus readability, line spacing, color/stroke changes, image/logo integrity, and page whole-structure preservation.',
+      'Return JSON only with status, confidence, pages, and issues. Every issue must include criterion (QC-* code), type, severity (critical/high/medium/minor), description, and evidence with page plus approximate rect when visible. Use pass only when visually safe, manual_review for non-critical visible differences, and hard_fail for clipping, overlap, missing content/artwork, or unreadable output.',
       'Do not judge translation wording or invent missing text; report only visible layout and style defects.',
     ].join(' '),
   }]
@@ -126,7 +175,8 @@ const runVisionComparison = async (config: AppConfig, source: VisualProfile, tra
   const modelUsage = payload.usage as Record<string, unknown> | undefined
   await recordUsage?.({ provider: 'openai', service: 'responses', eventType: 'visual_comparison', externalId: typeof payload.id === 'string' ? payload.id : null, idempotencyKey: typeof payload.id === 'string' ? `openai:${payload.id}` : undefined, inputUnits: modelUsage?.input_tokens == null ? null : Number(modelUsage.input_tokens), outputUnits: modelUsage?.output_tokens == null ? null : Number(modelUsage.output_tokens), unitName: 'tokens', metadata: { model: config.OPENAI_MODEL, comparedPages: pages.length } })
   const parsed = jsonFromModelText(modelOutputText(payload))
-  return { status: parsed ? 'completed' : 'invalid_model_output', model: config.OPENAI_MODEL, result: parsed, strategySource: 'openai-vision-source-translated-comparison' }
+  const normalized = normalizedVisualReview(parsed)
+  return { status: normalized ? 'completed' : 'invalid_model_output', model: config.OPENAI_MODEL, result: normalized, strategySource: 'openai-vision-source-translated-comparison' }
 }
 
 export const reviewTranslatedVisualDocument = async (config: AppConfig, sourceBytes: Buffer, translatedBytes: Buffer, recordUsage?: (event: UsageEventInput) => Promise<unknown>): Promise<Record<string, unknown>> => {

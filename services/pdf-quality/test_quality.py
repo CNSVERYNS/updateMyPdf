@@ -3,7 +3,7 @@ import base64
 import fitz
 
 import app as quality_app
-from app import adapt_text_layout, extract_layout, inspect_documents, region_geometry_review, render_preserved_layout, repair_visual_assets
+from app import adapt_text_layout, extract_layout, inspect_documents, line_text_overlap_review, region_geometry_review, render_preserved_layout, repair_visual_assets
 
 
 PNG_1X1 = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
@@ -27,6 +27,7 @@ def test_same_layout_passes():
     assert result["qualityLayers"]["colorConsistency"]["score"] == 100
     assert result["qualityLayers"]["captureComparison"]["score"] == 100
     assert result["qualityLayers"]["blockGeometry"]["score"] == 100
+    assert result["qualityLayers"]["lineTextOverlap"]["score"] == 100
 
 
 def test_color_consistency_catches_changed_text_color():
@@ -182,6 +183,40 @@ def test_frame_region_rejects_text_that_escapes_the_frame():
     report = region_geometry_review(fitz.open(stream=source, filetype="pdf"), fitz.open(stream=result, filetype="pdf"))
     assert report["contentOverflows"] >= 1
     assert report["score"] < 90
+
+
+def test_line_text_overlap_preserves_intentional_source_baseline():
+    source_document = fitz.open()
+    source_page = source_document.new_page(width=300, height=400)
+    source_page.draw_line((100, 40), (100, 100), color=(0, 0, 0), width=1)
+    source_page.insert_text((40, 60), "Source label", fontsize=12)
+    source = source_document.tobytes()
+    source_document.close()
+
+    report = line_text_overlap_review(fitz.open(stream=source, filetype="pdf"), fitz.open(stream=source, filetype="pdf"))
+    assert report["score"] == 100
+    assert report["newOverlapCount"] == 0
+
+
+def test_line_text_overlap_rejects_new_vertical_text_collision():
+    source_document = fitz.open()
+    source_page = source_document.new_page(width=300, height=400)
+    source_page.draw_line((100, 40), (100, 100), color=(0, 0, 0), width=1)
+    source_page.insert_text((40, 60), "Source", fontsize=12)
+    source = source_document.tobytes()
+    source_document.close()
+
+    result_document = fitz.open()
+    result_page = result_document.new_page(width=300, height=400)
+    result_page.draw_line((100, 40), (100, 100), color=(0, 0, 0), width=1)
+    result_page.insert_text((80, 60), "Translated label crosses line", fontsize=12)
+    result = result_document.tobytes()
+    result_document.close()
+
+    report = line_text_overlap_review(fitz.open(stream=source, filetype="pdf"), fitz.open(stream=result, filetype="pdf"))
+    assert report["newOverlaps"]["vertical-line-text-overlap"] >= 1
+    assert report["score"] < 90
+    assert any(issue["criterion"] == "QC-GEO-018" for issue in report["issues"])
 
 
 def test_malformed_pdf_fails():

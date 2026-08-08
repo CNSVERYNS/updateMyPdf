@@ -811,6 +811,98 @@ def region_geometry_review(source: fitz.Document, result: fitz.Document) -> dict
     }
 
 
+def _line_text_overlap_details(page: fitz.Page) -> list[dict[str, Any]]:
+    details: list[dict[str, Any]] = []
+    blocks = text_blocks(page)
+    for drawing in page.get_drawings():
+        for item in drawing.get("items", []):
+            line = _line_rect(item)
+            if line is None:
+                continue
+            if line.width >= 8 and line.height <= 1.5:
+                line_type = "horizontal"
+            elif line.height >= 8 and line.width <= 1.5:
+                line_type = "vertical"
+            else:
+                continue
+            for block_index, block in enumerate(blocks):
+                text_rect = fitz.Rect(block["rect"])
+                if line_type == "vertical":
+                    intersects = line.x0 >= text_rect.x0 - 1.5 and line.x0 <= text_rect.x1 + 1.5 and line.y1 >= text_rect.y0 and line.y0 <= text_rect.y1
+                else:
+                    intersects = line.y0 >= text_rect.y0 - 1.5 and line.y0 <= text_rect.y1 + 1.5 and line.x1 >= text_rect.x0 and line.x0 <= text_rect.x1
+                if intersects:
+                    details.append({
+                        "type": f"{line_type}-line-text-overlap",
+                        "lineRect": [round(value, 2) for value in line],
+                        "textRect": [round(value, 2) for value in text_rect],
+                        "blockIndex": block_index,
+                    })
+
+    for region_index, region in enumerate(layout_regions(page)):
+        if region["kind"] != "checkbox":
+            continue
+        checkbox = fitz.Rect(region["rect"])
+        expanded_checkbox = fitz.Rect(checkbox.x0 - 1.5, checkbox.y0 - 1.5, checkbox.x1 + 1.5, checkbox.y1 + 1.5)
+        for block_index, block in enumerate(blocks):
+            text_rect = fitz.Rect(block["rect"])
+            if not (expanded_checkbox & text_rect).is_empty:
+                details.append({
+                    "type": "checkbox-label-overlap",
+                    "checkboxRect": [round(value, 2) for value in checkbox],
+                    "textRect": [round(value, 2) for value in text_rect],
+                    "regionIndex": region_index,
+                    "blockIndex": block_index,
+                })
+    return details
+
+
+def line_text_overlap_review(source: fitz.Document, result: fitz.Document) -> dict[str, Any]:
+    """Reject new line/text or checkbox/label collisions while preserving source baselines."""
+    issues: list[dict[str, Any]] = []
+    baseline_counts = {"vertical-line-text-overlap": 0, "horizontal-line-text-overlap": 0, "checkbox-label-overlap": 0}
+    result_counts = dict(baseline_counts)
+    new_counts = dict(baseline_counts)
+    for page_index in range(max(len(source), len(result))):
+        source_details = _line_text_overlap_details(source[page_index]) if page_index < len(source) else []
+        result_details = _line_text_overlap_details(result[page_index]) if page_index < len(result) else []
+        for overlap_type in baseline_counts:
+            source_count = sum(1 for detail in source_details if detail["type"] == overlap_type)
+            result_count = sum(1 for detail in result_details if detail["type"] == overlap_type)
+            baseline_counts[overlap_type] += source_count
+            result_counts[overlap_type] += result_count
+            additional = max(0, result_count - source_count)
+            new_counts[overlap_type] += additional
+            if additional:
+                selected = [detail for detail in result_details if detail["type"] == overlap_type][:additional]
+                criterion = {
+                    "vertical-line-text-overlap": "QC-GEO-018",
+                    "horizontal-line-text-overlap": "QC-GEO-019",
+                    "checkbox-label-overlap": "QC-GEO-020",
+                }[overlap_type]
+                for detail in selected:
+                    issues.append({
+                        "criterion": criterion,
+                        "type": overlap_type,
+                        "severity": "high",
+                        "page": page_index + 1,
+                        **detail,
+                        "message": "New line/label overlap was detected in the translated output.",
+                    })
+    total_new = sum(new_counts.values())
+    score = max(0, 100 - min(50, new_counts["vertical-line-text-overlap"] * 25) - min(50, new_counts["horizontal-line-text-overlap"] * 25) - min(50, new_counts["checkbox-label-overlap"] * 25))
+    return {
+        "score": score,
+        "status": "pass" if score >= PASS_SCORE else "fail",
+        "engine": "deterministic-line-text-baseline-review",
+        "baselineOverlaps": baseline_counts,
+        "resultOverlaps": result_counts,
+        "newOverlaps": new_counts,
+        "newOverlapCount": total_new,
+        "issues": issues[:80],
+    }
+
+
 def block_geometry_review(source: fitz.Document, result: fitz.Document) -> dict[str, Any]:
     """Perform a strict one-to-one geometry check for every text paragraph.
 
@@ -1242,6 +1334,7 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
     visual_review = visual_layout_review(source, result)
     block_geometry = block_geometry_review_strict(source, result)
     region_review = region_geometry_review(source, result)
+    line_text_overlap = line_text_overlap_review(source, result)
     color_consistency = color_consistency_review(source, result)
     capture_comparison = visual_review.get("captureComparison", {"score": 0, "status": "fail", "pages": []})
     source_text_for_comparison = "\n".join(page.get_text("text") or "" for page in source)
@@ -1308,6 +1401,9 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
         for issue in region_review["issues"][:5]:
             warnings.append(f"Region kontrolü: {issue['message']}")
 
+    if line_text_overlap["score"] < PASS_SCORE:
+        warnings.append(f"Line/text overlap review failed: {line_text_overlap['newOverlapCount']} new overlaps.")
+
     page_score = 100
     page_score -= 35 if len(source_pages) != len(result_pages) else 0
     page_score -= min(25, len(size_differences) * 10)
@@ -1335,7 +1431,7 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
     layout_score = 100
     layout_score -= min(25, len(overflow_pages) * 15)
     layout_score -= min(25, len(blank_pages) * 15)
-    layout_score = max(0, min(layout_score, block_geometry["score"], region_review["score"]))
+    layout_score = max(0, min(layout_score, block_geometry["score"], region_review["score"], line_text_overlap["score"]))
 
     quality_layers = {
         "fileIntegrity": {"score": 100, "status": "pass", "sourceBytes": len(source_bytes), "resultBytes": len(result_bytes)},
@@ -1349,12 +1445,13 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
         "colorConsistency": color_consistency,
         "blockGeometry": block_geometry,
         "regionGeometry": region_review,
+        "lineTextOverlap": line_text_overlap,
         "layout": {"score": layout_score, "status": "pass" if layout_score >= PASS_SCORE else "warning", "sourceTextBlocks": source_metrics["textBlocks"], "resultTextBlocks": result_metrics["textBlocks"], "sourceLinks": source_metrics["links"], "resultLinks": result_metrics["links"], "sourceAnnotations": source_metrics["annotations"], "resultAnnotations": result_metrics["annotations"], "overflowPages": overflow_pages, "blankPages": sorted(set(blank_pages))},
     }
-    weighted_score = round((page_score * 0.15) + (text_score * 0.20) + (typography_score * 0.15) + (color_consistency["score"] * 0.10) + (visual_score * 0.10) + (capture_comparison["score"] * 0.10) + (visual_review["score"] * 0.10) + (region_review["score"] * 0.05) + (layout_score * 0.05))
+    weighted_score = round((page_score * 0.15) + (text_score * 0.20) + (typography_score * 0.15) + (color_consistency["score"] * 0.10) + (visual_score * 0.10) + (capture_comparison["score"] * 0.10) + (visual_review["score"] * 0.10) + (region_review["score"] * 0.04) + (line_text_overlap["score"] * 0.04) + (layout_score * 0.02))
     # A document is only as good as its weakest critical layer. This prevents
     # a high weighted average from hiding omitted text or broken layout.
-    score = max(0, min(100, weighted_score, page_score, text_score, typography_score, color_consistency["score"], visual_score, capture_comparison["score"], visual_review["score"], block_geometry["score"], region_review["score"], layout_score))
+    score = max(0, min(100, weighted_score, page_score, text_score, typography_score, color_consistency["score"], visual_score, capture_comparison["score"], visual_review["score"], block_geometry["score"], region_review["score"], line_text_overlap["score"], layout_score))
     source.close()
     result.close()
     return {
@@ -1923,6 +2020,7 @@ def translation_quality_gate(report: dict[str, Any]) -> bool:
     color_layer = layers.get("colorConsistency")
     capture_layer = layers.get("captureComparison")
     region_layer = layers.get("regionGeometry")
+    line_text_layer = layers.get("lineTextOverlap")
     return (
         report.get("score", 0) >= PASS_SCORE
         and page_integrity_preserved(report)
@@ -1931,6 +2029,7 @@ def translation_quality_gate(report: dict[str, Any]) -> bool:
         and (color_layer is None or color_layer.get("score", 0) >= PASS_SCORE)
         and (capture_layer is None or capture_layer.get("score", 0) >= PASS_SCORE)
         and (region_layer is None or region_layer.get("score", 0) >= PASS_SCORE)
+        and (line_text_layer is None or line_text_layer.get("score", 0) >= PASS_SCORE)
     )
 
 

@@ -66,9 +66,9 @@ Kural: Bir kriter kodu tamamlanmadan “tamamlandı” işaretlenmez. Kalite kap
 - [ ] QC-GEO-015: Kutu içinde Türkçe uzama için yalnız ilgili bölge fit edilmeli.
 - [ ] QC-GEO-016: Frame dışındaki metin frame içine taşmamalı.
 - [ ] QC-GEO-017: Frame içindeki metin başka frame alanına taşmamalı.
-- [ ] QC-GEO-018: Dikey çizgi/ayraç ile text overlap kontrol edilmeli.
-- [ ] QC-GEO-019: Yatay çizgi/underline ile text overlap kontrol edilmeli.
-- [ ] QC-GEO-020: Checkbox/radio işareti ile label overlap kontrol edilmeli.
+- [x] QC-GEO-018: Dikey çizgi/ayraç ile text overlap kontrol edilmeli.
+- [x] QC-GEO-019: Yatay çizgi/underline ile text overlap kontrol edilmeli.
+- [x] QC-GEO-020: Checkbox/radio işareti ile label overlap kontrol edilmeli.
 - [ ] QC-GEO-021: Tablo hücresi sınırları ve hücre padding’i korunmalı.
 - [ ] QC-GEO-022: Tablo satır yüksekliği ve kolon genişliği kontrol edilmeli.
 - [ ] QC-GEO-023: Birleşik/merged hücre geometrisi kontrol edilmeli.
@@ -150,12 +150,12 @@ Kural: Bir kriter kodu tamamlanmadan “tamamlandı” işaretlenmez. Kalite kap
 - [x] QC-AI-001: AI review yapılandırılmış JSON bekliyor.
 - [x] QC-AI-002: AI review parse edilemezse durum failed/invalid raporlanıyor.
 - [x] QC-AI-003: AI modeline kaynak ve çevrilmiş capture birlikte veriliyor.
-- [ ] QC-AI-004: AI prompt yatay/dikey/frame/box/column/heading kriterlerini ayrı ayrı istemeli.
-- [ ] QC-AI-005: AI issue’ları criterion code ile etiketlemeli.
-- [ ] QC-AI-006: AI issue koordinat/region kanıtı üretmeli.
-- [ ] QC-AI-007: AI font küçülmesini “görsel fark” ve “okunamazlık” olarak ayırmalı.
-- [ ] QC-AI-008: AI translation wording’i layout defect olarak değerlendirmemeli.
-- [ ] QC-AI-009: AI manual_review ile hard_fail ayrımı uygulanmalı.
+- [x] QC-AI-004: AI prompt yatay/dikey/frame/box/column/heading kriterlerini ayrı ayrı istemeli.
+- [x] QC-AI-005: AI issue’ları criterion code ile etiketlemeli.
+- [~] QC-AI-006: AI issue koordinat/region kanıtı üretmeli.
+- [x] QC-AI-007: AI font küçülmesini “görsel fark” ve “okunamazlık” olarak ayırmalı.
+- [x] QC-AI-008: AI translation wording’i layout defect olarak değerlendirmemeli.
+- [x] QC-AI-009: AI manual_review ile hard_fail ayrımı uygulanmalı.
 - [ ] QC-AI-010: AI confidence düşükse deterministik katman kararı korunmalı.
 - [ ] QC-AI-011: AI kaynak/result sayfa eşleşmesi yapmalı.
 - [ ] QC-AI-012: AI kolon ve tablo bozulmasını özel sınıf olarak raporlamalı.
