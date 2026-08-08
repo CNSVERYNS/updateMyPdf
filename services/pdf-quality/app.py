@@ -845,15 +845,23 @@ def _line_text_overlap_details(page: fitz.Page) -> list[dict[str, Any]]:
         checkbox = fitz.Rect(region["rect"])
         expanded_checkbox = fitz.Rect(checkbox.x0 - 1.5, checkbox.y0 - 1.5, checkbox.x1 + 1.5, checkbox.y1 + 1.5)
         for block_index, block in enumerate(blocks):
-            text_rect = fitz.Rect(block["rect"])
-            if not (expanded_checkbox & text_rect).is_empty:
-                details.append({
-                    "type": "checkbox-label-overlap",
-                    "checkboxRect": [round(value, 2) for value in checkbox],
-                    "textRect": [round(value, 2) for value in text_rect],
-                    "regionIndex": region_index,
-                    "blockIndex": block_index,
-                })
+            for span_index, span in enumerate(block.get("spans", [])):
+                text_rect = fitz.Rect(span.get("bbox", block["rect"]))
+                text_center = fitz.Point((text_rect.x0 + text_rect.x1) / 2, (text_rect.y0 + text_rect.y1) / 2)
+                # A checkmark/radio glyph is expected to live inside its
+                # control. Only a label glyph crossing the control boundary
+                # is a collision.
+                if checkbox.contains(text_center):
+                    continue
+                if not (expanded_checkbox & text_rect).is_empty:
+                    details.append({
+                        "type": "checkbox-label-overlap",
+                        "checkboxRect": [round(value, 2) for value in checkbox],
+                        "textRect": [round(value, 2) for value in text_rect],
+                        "regionIndex": region_index,
+                        "blockIndex": block_index,
+                        "spanIndex": span_index,
+                    })
     return details
 
 

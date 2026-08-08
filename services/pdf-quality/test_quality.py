@@ -219,6 +219,28 @@ def test_line_text_overlap_rejects_new_vertical_text_collision():
     assert any(issue["criterion"] == "QC-GEO-018" for issue in report["issues"])
 
 
+def test_checkbox_mark_inside_control_is_not_label_overlap():
+    source_document = fitz.open()
+    source_page = source_document.new_page(width=300, height=400)
+    checkbox = fitz.Rect(40, 40, 52, 52)
+    source_page.draw_rect(checkbox, color=(0, 0, 0), width=1)
+    source_page.insert_text((60, 50), "Label", fontsize=10)
+    source = source_document.tobytes()
+    source_document.close()
+
+    result_document = fitz.open()
+    result_page = result_document.new_page(width=300, height=400)
+    result_page.draw_rect(checkbox, color=(0, 0, 0), width=1)
+    result_page.insert_text((42, 50), "x", fontsize=8)
+    result_page.insert_text((60, 50), "Translated label", fontsize=10)
+    result = result_document.tobytes()
+    result_document.close()
+
+    report = line_text_overlap_review(fitz.open(stream=source, filetype="pdf"), fitz.open(stream=result, filetype="pdf"))
+    assert report["newOverlaps"]["checkbox-label-overlap"] == 0
+    assert report["score"] == 100
+
+
 def test_malformed_pdf_fails():
     result = inspect_documents(make_pdf(), b"not a pdf")
     assert result["passed"] is False
