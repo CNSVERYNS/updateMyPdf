@@ -1034,6 +1034,11 @@ def block_geometry_review_strict(source: fitz.Document, result: fitz.Document) -
         result_blocks = text_blocks(result_page) if result_page else []
         result_lines = [line for block in result_blocks for line in block.get("lineBoxes", [])]
         result_lines.sort(key=lambda line: (fitz.Rect(line["rect"]).y0, fitz.Rect(line["rect"]).x0))
+        source_page_text = source_page.get_text("text") if source_page else ""
+        result_page_text = result_page.get_text("text") if result_page else ""
+        page_char_ratio = len(result_page_text.strip()) / max(len(source_page_text.strip()), 1)
+        page_translation_similarity = difflib.SequenceMatcher(None, source_page_text, result_page_text, autojunk=False).ratio()
+        translation_aware_page = page_char_ratio >= MIN_TEXT_CHAR_RATIO and page_translation_similarity < 0.85
         total_source += len(source_blocks)
         total_result_lines += len(result_lines)
         page_issues: list[dict[str, Any]] = []
@@ -1050,7 +1055,11 @@ def block_geometry_review_strict(source: fitz.Document, result: fitz.Document) -
             # font metrics change. Keep the check strict, but allow a bounded
             # line-height envelope; raster/capture and collision checks still
             # reject real displacement or overlap.
-            position_tolerance = max(18.0, source_rect.height * 2.75)
+            # Different-language line wrapping can move a later line farther
+            # than the source block height even when page/canvas geometry is
+            # preserved. Keep the default strict; widen only for a page whose
+            # text volume is preserved but whose language is visibly changed.
+            position_tolerance = max(24.0, source_rect.height * 4.0) if translation_aware_page else max(18.0, source_rect.height * 2.75)
             candidates = []
             for line_index, line in enumerate(result_lines):
                 if line_index in used:
@@ -1117,7 +1126,7 @@ def block_geometry_review_strict(source: fitz.Document, result: fitz.Document) -
                 page_issues.append({"type": "line-overflow", "severity": "high", "page": page_index + 1, "message": "Result text line overflowed the page bounds."})
 
         page_score = max(0, 100 - min(60, sum(1 for issue in page_issues if issue["type"] == "missing-block") * 30) - min(45, position_drifts * 8) - min(70, len(new_overlap_details) * 35) - min(45, sum(1 for issue in page_issues if issue["type"] == "line-overflow") * 25))
-        page_scores.append({"page": page_index + 1, "score": page_score, "sourceBlocks": len(source_blocks), "resultBlocks": len(result_blocks), "resultLines": len(result_lines), "matchedBlocks": len(used), "unmatchedResultLines": max(0, len(result_lines) - len(used)), "baselineLineOverlapCount": len(baseline_overlaps), "lineOverlapCount": len(new_overlap_details), "issues": page_issues[:20]})
+        page_scores.append({"page": page_index + 1, "score": page_score, "sourceBlocks": len(source_blocks), "resultBlocks": len(result_blocks), "resultLines": len(result_lines), "matchedBlocks": len(used), "unmatchedResultLines": max(0, len(result_lines) - len(used)), "baselineLineOverlapCount": len(baseline_overlaps), "lineOverlapCount": len(new_overlap_details), "translationAware": translation_aware_page, "pageCharRatio": round(page_char_ratio, 3), "pageTranslationSimilarity": round(page_translation_similarity, 3), "issues": page_issues[:20]})
         issues.extend(page_issues)
 
     score = min((page["score"] for page in page_scores), default=100 if len(source) == 0 else 0)
