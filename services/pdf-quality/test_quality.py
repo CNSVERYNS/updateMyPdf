@@ -316,6 +316,29 @@ def test_preserve_renderer_keeps_multiline_text_in_source_line_boxes():
     document.close()
 
 
+def test_preserve_renderer_fits_locally_before_candidate_scale(monkeypatch):
+    source = make_pdf(text="Original text block")
+    blocks = extract_layout(source)
+    calls = []
+
+    def fake_insert(_page, _document, _block, _text, _font_cache, scale):
+        calls.append(scale)
+        return scale == 0.8
+
+    monkeypatch.setattr(quality_app, "insert_preserved_text", fake_insert)
+    output, details = quality_app.render_preserved_layout_candidate(
+        source,
+        {blocks[0]["id"]: "Translated text block"},
+        0.8,
+    )
+
+    assert fitz.open(stream=output, filetype="pdf").page_count == 1
+    assert calls == [1.0, 0.8]
+    assert details["localFitBlocks"] == 0
+    assert details["fallbackFitBlocks"] == 1
+    assert details["regionalFitDecisions"][0]["fitMode"] == "fallback"
+
+
 def test_preserve_renderer_progressively_shrinks_until_page_integrity_is_restored(monkeypatch):
     source = make_pdf(text="Original text block")
     blocks = extract_layout(source)

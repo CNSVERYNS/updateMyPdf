@@ -2168,11 +2168,21 @@ def expanded_render_rect(block: dict[str, Any], blocks: list[dict[str, Any]], pa
 
 
 def render_preserved_layout_candidate(source_bytes: bytes, translations: dict[str, str], global_scale: float = 1.0) -> tuple[bytes, dict[str, Any]]:
+    """Render one candidate with local fit before any fallback scale.
+
+    ``global_scale`` is retained as a safety-net candidate for blocks that
+    cannot fit at their source size. It must never be applied to every block:
+    doing that makes a single long translated region shrink the entire page
+    and is exactly the failure mode covered by QC-GEO-015.
+    """
     source = fitz.open(stream=source_bytes, filetype="pdf")
     replaced = 0
     reduced = 0
     failed = 0
     missing = 0
+    local_fit_blocks = 0
+    fallback_fit_blocks = 0
+    regional_fit_decisions: list[dict[str, Any]] = []
     try:
         for page_index, page in enumerate(source):
             page_blocks = text_blocks(page)
@@ -2189,13 +2199,51 @@ def render_preserved_layout_candidate(source_bytes: bytes, translations: dict[st
                 render_queue.append((block, translated_text))
             page.apply_redactions(images=0, graphics=0, text=0)
             for block, translated_text in render_queue:
-                if insert_preserved_text(page, source, block, translated_text, font_cache, global_scale):
+                # Always give the block its full source font size first. The
+                # insertion helper already performs local font/line fitting;
+                # the candidate scale is used only when that local fit fails.
+                selected_scale = 1.0
+                fitted = insert_preserved_text(page, source, block, translated_text, font_cache, 1.0)
+                if fitted:
+                    local_fit_blocks += 1
+                elif global_scale < 0.999:
+                    selected_scale = global_scale
+                    fitted = insert_preserved_text(page, source, block, translated_text, font_cache, global_scale)
+                    if fitted:
+                        fallback_fit_blocks += 1
+                        reduced += 1
+                regional_fit_decisions.append({
+                    "page": block.get("page", page_index),
+                    "block": block.get("id", f"{page_index}:{len(regional_fit_decisions)}"),
+                    "initialScale": 1.0,
+                    "selectedScale": round(selected_scale, 3) if fitted else None,
+                    "fitMode": "local" if selected_scale == 1.0 and fitted else ("fallback" if fitted else "failed"),
+                })
+                if fitted:
                     replaced += 1
                 else:
                     failed += 1
         if replaced == 0:
-            return source_bytes, {"replacedBlocks": 0, "reducedBlocks": reduced, "missingBlocks": missing, "failedBlocks": failed, "fallback": True}
-        return source.tobytes(garbage=4, deflate=True), {"replacedBlocks": replaced, "reducedBlocks": reduced, "missingBlocks": missing, "failedBlocks": failed, "fallback": False}
+            return source_bytes, {
+                "replacedBlocks": 0,
+                "reducedBlocks": reduced,
+                "missingBlocks": missing,
+                "failedBlocks": failed,
+                "localFitBlocks": local_fit_blocks,
+                "fallbackFitBlocks": fallback_fit_blocks,
+                "regionalFitDecisions": regional_fit_decisions[:200],
+                "fallback": True,
+            }
+        return source.tobytes(garbage=4, deflate=True), {
+            "replacedBlocks": replaced,
+            "reducedBlocks": reduced,
+            "missingBlocks": missing,
+            "failedBlocks": failed,
+            "localFitBlocks": local_fit_blocks,
+            "fallbackFitBlocks": fallback_fit_blocks,
+            "regionalFitDecisions": regional_fit_decisions[:200],
+            "fallback": False,
+        }
     finally:
         source.close()
 
