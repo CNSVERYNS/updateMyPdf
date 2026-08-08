@@ -27,7 +27,7 @@
             { "name": "AZURE_STORAGE_QUARANTINE_CONTAINER", "value": "translation-quarantine" },
             { "name": "TRANSLATION_MOCK", "value": "false" },
             { "name": "SYNC_TRANSLATION_ENABLED", "value": "true" },
-            { "name": "PDF_QUALITY_SERVICE_URL", "value": "https://updatemypdf-quality.internal.graybay-8494ee2d.eastus.azurecontainerapps.io" },
+            { "name": "PDF_QUALITY_SERVICE_URL", "value": "http://updatemypdf-quality.internal.graybay-8494ee2d.eastus.azurecontainerapps.io" },
             { "name": "OPENAI_API_KEY", "secretRef": "openai-api-key" },
             { "name": "OPENAI_MODEL", "value": "gpt-5.1" },
             { "name": "AI_VISUAL_REVIEW_ENABLED", "value": "true" },
