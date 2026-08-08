@@ -1595,6 +1595,10 @@ def render_preserved_layout(source_bytes: bytes, translations: dict[str, str]) -
             for name, layer in best["report"].get("qualityLayers", {}).items()
             if isinstance(layer, dict) and "status" in layer
         },
+        "selectedGeometryReview": {
+            "pageScores": best["report"].get("qualityLayers", {}).get("blockGeometry", {}).get("pageScores", []),
+            "issues": best["report"].get("qualityLayers", {}).get("blockGeometry", {}).get("issues", [])[:20],
+        },
     }
     return best["output"], details
 
