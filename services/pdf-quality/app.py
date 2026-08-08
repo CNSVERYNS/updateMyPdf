@@ -857,6 +857,12 @@ def _line_text_overlap_details(page: fitz.Page) -> list[dict[str, Any]]:
     return details
 
 
+def _overlap_geometry_close(left: Any, right: Any, tolerance: float = 2.0) -> bool:
+    if not isinstance(left, list) or not isinstance(right, list) or len(left) != 4 or len(right) != 4:
+        return False
+    return all(abs(float(left[index]) - float(right[index])) <= tolerance for index in range(4))
+
+
 def line_text_overlap_review(source: fitz.Document, result: fitz.Document) -> dict[str, Any]:
     """Reject new line/text or checkbox/label collisions while preserving source baselines."""
     issues: list[dict[str, Any]] = []
@@ -867,20 +873,37 @@ def line_text_overlap_review(source: fitz.Document, result: fitz.Document) -> di
         source_details = _line_text_overlap_details(source[page_index]) if page_index < len(source) else []
         result_details = _line_text_overlap_details(result[page_index]) if page_index < len(result) else []
         for overlap_type in baseline_counts:
-            source_count = sum(1 for detail in source_details if detail["type"] == overlap_type)
-            result_count = sum(1 for detail in result_details if detail["type"] == overlap_type)
+            source_entries = [detail for detail in source_details if detail["type"] == overlap_type]
+            result_entries = [detail for detail in result_details if detail["type"] == overlap_type]
+            source_count = len(source_entries)
+            result_count = len(result_entries)
             baseline_counts[overlap_type] += source_count
             result_counts[overlap_type] += result_count
-            additional = max(0, result_count - source_count)
+            matched_source: set[int] = set()
+            additional_entries: list[dict[str, Any]] = []
+            for result_entry in result_entries:
+                result_geometry = result_entry.get("lineRect") or result_entry.get("checkboxRect")
+                match_index = next(
+                    (
+                        index for index, source_entry in enumerate(source_entries)
+                        if index not in matched_source
+                        and _overlap_geometry_close(result_geometry, source_entry.get("lineRect") or source_entry.get("checkboxRect"))
+                    ),
+                    None,
+                )
+                if match_index is None:
+                    additional_entries.append(result_entry)
+                else:
+                    matched_source.add(match_index)
+            additional = len(additional_entries)
             new_counts[overlap_type] += additional
             if additional:
-                selected = [detail for detail in result_details if detail["type"] == overlap_type][:additional]
                 criterion = {
                     "vertical-line-text-overlap": "QC-GEO-018",
                     "horizontal-line-text-overlap": "QC-GEO-019",
                     "checkbox-label-overlap": "QC-GEO-020",
                 }[overlap_type]
-                for detail in selected:
+                for detail in additional_entries:
                     issues.append({
                         "criterion": criterion,
                         "type": overlap_type,
