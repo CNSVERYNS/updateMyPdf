@@ -2131,6 +2131,13 @@ def render_preserved_layout(source_bytes: bytes, translations: dict[str, str]) -
             "pageScores": best["report"].get("qualityLayers", {}).get("blockGeometry", {}).get("pageScores", []),
             "issues": best["report"].get("qualityLayers", {}).get("blockGeometry", {}).get("issues", [])[:20],
         },
+        "selectedLineTextOverlap": {
+            "score": best["report"].get("qualityLayers", {}).get("lineTextOverlap", {}).get("score"),
+            "baselineOverlaps": best["report"].get("qualityLayers", {}).get("lineTextOverlap", {}).get("baselineOverlaps", {}),
+            "resultOverlaps": best["report"].get("qualityLayers", {}).get("lineTextOverlap", {}).get("resultOverlaps", {}),
+            "newOverlaps": best["report"].get("qualityLayers", {}).get("lineTextOverlap", {}).get("newOverlaps", {}),
+            "issues": best["report"].get("qualityLayers", {}).get("lineTextOverlap", {}).get("issues", [])[:20],
+        },
     }
     return best["output"], details
 
