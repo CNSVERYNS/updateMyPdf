@@ -1585,6 +1585,16 @@ def render_preserved_layout(source_bytes: bytes, translations: dict[str, str]) -
         "pageIntegrityPreserved": page_integrity_preserved(best["report"]),
         "qualityGatePassed": translation_quality_gate(best["report"]),
         "candidateScores": candidate_scores,
+        "selectedLayerScores": {
+            name: layer.get("score")
+            for name, layer in best["report"].get("qualityLayers", {}).items()
+            if isinstance(layer, dict) and "score" in layer
+        },
+        "selectedLayerStatuses": {
+            name: layer.get("status")
+            for name, layer in best["report"].get("qualityLayers", {}).items()
+            if isinstance(layer, dict) and "status" in layer
+        },
     }
     return best["output"], details
 
