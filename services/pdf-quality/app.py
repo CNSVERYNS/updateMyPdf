@@ -599,7 +599,11 @@ def block_geometry_review_strict(source: fitz.Document, result: fitz.Document) -
             source_rect = fitz.Rect(source_block["rect"])
             source_center = source_block["center"]
             safe_rect = expanded_render_rect(source_block, source_blocks, source_page)
-            position_tolerance = max(18.0, source_rect.height * 2.5)
+            # A translated one-line block can move by a small amount when the
+            # font metrics change. Keep the check strict, but allow a bounded
+            # line-height envelope; raster/capture and collision checks still
+            # reject real displacement or overlap.
+            position_tolerance = max(18.0, source_rect.height * 2.75)
             candidates = []
             for line_index, line in enumerate(result_lines):
                 if line_index in used:
@@ -1474,7 +1478,10 @@ def expanded_render_rect(block: dict[str, Any], blocks: list[dict[str, Any]], pa
         # re-rendered long line wrap into the following paragraph.
         if other_rect.y0 > rect.y0 + 0.5 and horizontal_overlap >= rect.width * 0.2:
             candidates.append(other_rect.y0)
-    bottom = min(candidates, default=page.rect.y1) - 1
+    # Leave a small collision buffer before the next source region. A textbox
+    # can report a successful fit while its extracted glyph bbox reaches the
+    # following line by a fraction of a point, especially after font fallback.
+    bottom = min(candidates, default=page.rect.y1) - 3
     return fitz.Rect(rect.x0, rect.y0, rect.x1, max(rect.y1, bottom))
 
 
