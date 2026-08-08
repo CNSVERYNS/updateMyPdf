@@ -2094,7 +2094,12 @@ def render_preserved_layout(source_bytes: bytes, translations: dict[str, str]) -
             # raster inspection is running on a dense vector form.
             del output
         complete = render_details.get("missingBlocks", 0) == 0 and render_details.get("failedBlocks", 0) == 0
-        geometry_score = report.get("qualityLayers", {}).get("blockGeometry", {}).get("score", PASS_SCORE)
+        quality_layers = report.get("qualityLayers", {})
+        geometry_score = min(
+            quality_layers.get("blockGeometry", {}).get("score", PASS_SCORE),
+            quality_layers.get("regionGeometry", {}).get("score", PASS_SCORE),
+            quality_layers.get("lineTextOverlap", {}).get("score", PASS_SCORE),
+        )
         # Once the source-region geometry is sound, shrinking cannot repair a
         # font/color/capture mismatch and only repeats an expensive full-page
         # raster inspection. Retry only when the layout layer itself needs it.
