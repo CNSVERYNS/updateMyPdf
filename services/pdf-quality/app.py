@@ -241,6 +241,74 @@ def typography_consistency(source: fitz.Document, result: fitz.Document) -> dict
     }
 
 
+def regional_scaling_review(source: fitz.Document, result: fitz.Document) -> dict[str, Any]:
+    """Report whether fit pressure is localized to text regions or document-wide."""
+    pages: list[dict[str, Any]] = []
+    ratios: list[float] = []
+    scaled_blocks = 0
+    severe_blocks = 0
+    matched_blocks = 0
+    for page_index in range(min(len(source), len(result))):
+        source_blocks = text_blocks(source[page_index])
+        result_spans = [span for block in text_blocks(result[page_index]) for span in block["spans"] if span.get("text", "").strip()]
+        page_ratios: list[float] = []
+        used: set[int] = set()
+        for source_block in source_blocks:
+            source_span = source_block["spans"][0]
+            source_rect = fitz.Rect(source_span.get("bbox", source_block["rect"]))
+            source_center = ((source_rect.x0 + source_rect.x1) / 2, (source_rect.y0 + source_rect.y1) / 2)
+            candidates = [
+                (index, span) for index, span in enumerate(result_spans)
+                if index not in used
+            ]
+            if not candidates:
+                continue
+            result_index, result_span = min(
+                candidates,
+                key=lambda item: abs((fitz.Rect(item[1].get("bbox", (0, 0, 0, 0))).y0 + fitz.Rect(item[1].get("bbox", (0, 0, 0, 0))).y1) / 2 - source_center[1])
+                + abs((fitz.Rect(item[1].get("bbox", (0, 0, 0, 0))).x0 + fitz.Rect(item[1].get("bbox", (0, 0, 0, 0))).x1) / 2 - source_center[0]) * 0.15,
+            )
+            used.add(result_index)
+            result_rect = fitz.Rect(result_span.get("bbox", (0, 0, 0, 0)))
+            source_height = max(source_rect.height, 0.1)
+            result_height = max(result_rect.height, 0.1)
+            visual_ratio = round(result_height / source_height, 3)
+            page_ratios.append(visual_ratio)
+            ratios.append(visual_ratio)
+            matched_blocks += 1
+            if visual_ratio < 0.92:
+                scaled_blocks += 1
+            if visual_ratio < 0.65 or result_rect.height < 4.5:
+                severe_blocks += 1
+        page_scaled = sum(1 for value in page_ratios if value < 0.92)
+        pages.append({
+            "page": page_index + 1,
+            "matchedBlocks": len(page_ratios),
+            "scaledBlocks": page_scaled,
+            "scaledRate": round(page_scaled / max(len(page_ratios), 1), 3),
+            "minRatio": round(min(page_ratios), 3) if page_ratios else 1.0,
+            "medianRatio": round(statistics.median(page_ratios), 3) if page_ratios else 1.0,
+            "maxRatio": round(max(page_ratios), 3) if page_ratios else 1.0,
+        })
+    scaled_rate = round(scaled_blocks / max(matched_blocks, 1), 3)
+    scope = "none" if scaled_blocks == 0 else "partial" if scaled_rate < 0.6 else "broad"
+    return {
+        "score": 100 if severe_blocks == 0 else 85,
+        "status": "pass" if severe_blocks == 0 else "warning",
+        "engine": "deterministic-regional-scaling-review",
+        "scope": scope,
+        "matchedBlocks": matched_blocks,
+        "scaledBlocks": scaled_blocks,
+        "scaledRate": scaled_rate,
+        "minRatio": round(min(ratios), 3) if ratios else 1.0,
+        "medianRatio": round(statistics.median(ratios), 3) if ratios else 1.0,
+        "maxRatio": round(max(ratios), 3) if ratios else 1.0,
+        "severeBlocks": severe_blocks,
+        "pages": pages,
+        "policy": "partial-regional-fit-advisory",
+    }
+
+
 def _pixmap_rgb(pixmap: fitz.Pixmap, x: int, y: int) -> tuple[int, int, int]:
     x = max(0, min(pixmap.width - 1, x))
     y = max(0, min(pixmap.height - 1, y))
@@ -1371,6 +1439,7 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
     image_ratio = ratio(result_metrics["images"], source_metrics["images"]) if source_metrics["images"] else 1.0
     drawing_ratio = ratio(result_metrics["drawings"], source_metrics["drawings"]) if source_metrics["drawings"] else 1.0
     typography_match = typography_consistency(source, result)
+    regional_scaling = regional_scaling_review(source, result)
     visual_review = visual_layout_review(source, result)
     block_geometry = block_geometry_review_strict(source, result)
     region_review = region_geometry_review(source, result)
@@ -1479,6 +1548,7 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
         "text": {"score": text_score, "status": "pass" if text_score >= PASS_SCORE else "warning", "sourceChars": source_metrics["chars"], "resultChars": result_metrics["chars"], "sourceWords": source_metrics["words"], "resultWords": result_metrics["words"], "sourceTextBlocks": source_metrics["textBlocks"], "resultTextBlocks": result_metrics["textBlocks"], "charRatio": char_ratio, "wordRatio": word_ratio, "textBlockRatio": text_block_ratio, "textAreaRatio": text_area_ratio, "minimumCharRatio": MIN_TEXT_CHAR_RATIO, "minimumPositionCoverage": MIN_POSITION_COVERAGE, "positionCoverageRate": typography_match["positionCoverageRate"], "coverage": coverage},
         "typography": {"score": typography_score, "status": "pass" if typography_score >= PASS_SCORE else "warning", "source": {"min": source_metrics["fontMin"], "p10": source_metrics["fontP10"], "median": source_metrics["fontMedian"], "max": source_metrics["fontMax"]}, "result": {"min": result_metrics["fontMin"], "p10": result_metrics["fontP10"], "median": result_metrics["fontMedian"], "max": result_metrics["fontMax"]}, "smallFontSpans": result_metrics["smallFonts"], "fontMedianRatio": font_median_ratio},
         "typographyConsistency": {**typography_match, "status": "pass" if typography_match["score"] >= PASS_SCORE else "warning"},
+        "regionalScaling": regional_scaling,
         "visualAssets": {"score": visual_score, "status": "pass" if visual_score >= PASS_SCORE else "warning", "sourceImages": source_metrics["images"], "resultImages": result_metrics["images"], "sourceUniqueImages": source_metrics["uniqueImages"], "resultUniqueImages": result_metrics["uniqueImages"], "sourceDrawings": source_metrics["drawings"], "resultDrawings": result_metrics["drawings"], "imageRatio": image_ratio, "drawingRatio": drawing_ratio},
         "visualReview": visual_review,
         "captureComparison": capture_comparison,

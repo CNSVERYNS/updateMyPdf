@@ -28,6 +28,7 @@ def test_same_layout_passes():
     assert result["qualityLayers"]["captureComparison"]["score"] == 100
     assert result["qualityLayers"]["blockGeometry"]["score"] == 100
     assert result["qualityLayers"]["lineTextOverlap"]["score"] == 100
+    assert result["qualityLayers"]["regionalScaling"]["scope"] == "none"
 
 
 def test_color_consistency_catches_changed_text_color():

@@ -63,7 +63,7 @@ Kural: Bir kriter kodu tamamlanmadan “tamamlandı” işaretlenmez. Kalite kap
 - [x] QC-GEO-012: Kutu içinde text’in yatay hizası korunmalı.
 - [x] QC-GEO-013: Kutu içinde çok satırlı baseline aralığı çakışmamalı.
 - [x] QC-GEO-014: Kutu içinde son satır alt sınıra taşmamalı.
-- [ ] QC-GEO-015: Kutu içinde Türkçe uzama için yalnız ilgili bölge fit edilmeli.
+- [~] QC-GEO-015: Kutu içinde Türkçe uzama için yalnız ilgili bölge fit edilmeli.
 - [ ] QC-GEO-016: Frame dışındaki metin frame içine taşmamalı.
 - [ ] QC-GEO-017: Frame içindeki metin başka frame alanına taşmamalı.
 - [x] QC-GEO-018: Dikey çizgi/ayraç ile text overlap kontrol edilmeli.
@@ -103,7 +103,7 @@ Kural: Bir kriter kodu tamamlanmadan “tamamlandı” işaretlenmez. Kalite kap
 - [ ] QC-TYP-019: Bullet/number indent ve bullet glyph korunmalı.
 - [ ] QC-TYP-020: Tab stop konumları korunmalı.
 - [ ] QC-TYP-021: Alt çizgi/üst çizgi/strike-through korunmalı.
-- [ ] QC-TYP-022: Partial regional scaling kararı tüm sayfa scaling’den bağımsız raporlanmalı.
+- [x] QC-TYP-022: Partial regional scaling kararı tüm sayfa scaling’den bağımsız raporlanmalı.
 
 ## 5. QC-COL — renk ve çizgi görünümü
 
