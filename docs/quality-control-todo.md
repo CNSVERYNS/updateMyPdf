@@ -152,7 +152,7 @@ Kural: Bir kriter kodu tamamlanmadan “tamamlandı” işaretlenmez. Kalite kap
 - [x] QC-AI-003: AI modeline kaynak ve çevrilmiş capture birlikte veriliyor.
 - [x] QC-AI-004: AI prompt yatay/dikey/frame/box/column/heading kriterlerini ayrı ayrı istemeli.
 - [x] QC-AI-005: AI issue’ları criterion code ile etiketlemeli.
-- [~] QC-AI-006: AI issue koordinat/region kanıtı üretmeli.
+- [x] QC-AI-006: AI issue koordinat/region kanıtı üretmeli.
 - [x] QC-AI-007: AI font küçülmesini “görsel fark” ve “okunamazlık” olarak ayırmalı.
 - [x] QC-AI-008: AI translation wording’i layout defect olarak değerlendirmemeli.
 - [x] QC-AI-009: AI manual_review ile hard_fail ayrımı uygulanmalı.

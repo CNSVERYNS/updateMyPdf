@@ -57,7 +57,42 @@ const criterionForIssue = (type: string): string => {
   return 'QC-VIS-021'
 }
 
-const normalizedVisualReview = (parsed: Record<string, unknown> | null): Record<string, unknown> | null => {
+const numericRect = (value: unknown): [number, number, number, number] | null => {
+  const values = Array.isArray(value)
+    ? value
+    : value && typeof value === 'object'
+      ? [
+          (value as Record<string, unknown>).x0,
+          (value as Record<string, unknown>).y0,
+          (value as Record<string, unknown>).x1,
+          (value as Record<string, unknown>).y1,
+        ]
+      : []
+  if (values.length !== 4 || values.some((item) => typeof item !== 'number' || !Number.isFinite(item))) return null
+  const rect = values as number[]
+  if (rect[2] <= rect[0] || rect[3] <= rect[1]) return null
+  return rect.map((item) => Math.round(item * 100) / 100) as [number, number, number, number]
+}
+
+const normalizeEvidence = (issue: Record<string, unknown>, pageFallback: unknown) => {
+  const rawEvidence = issue.evidence ?? issue.rect ?? issue.bbox ?? null
+  const evidenceObject = rawEvidence && typeof rawEvidence === 'object' && !Array.isArray(rawEvidence)
+    ? rawEvidence as Record<string, unknown>
+    : null
+  const rawRect = Array.isArray(rawEvidence)
+    ? rawEvidence
+    : evidenceObject?.rect ?? evidenceObject?.bbox ?? evidenceObject
+  const pageValue = evidenceObject?.page ?? issue.page ?? pageFallback
+  const page = Number(pageValue)
+  const rect = numericRect(rawRect)
+  if (Number.isInteger(page) && page > 0 && rect) return { evidence: { page, rect }, evidenceStatus: 'valid' as const }
+  return {
+    evidence: null,
+    evidenceStatus: rawEvidence == null ? 'missing' as const : 'invalid' as const,
+  }
+}
+
+export const normalizedVisualReview = (parsed: Record<string, unknown> | null): Record<string, unknown> | null => {
   if (!parsed) return null
   const pages = Array.isArray(parsed.pages) ? parsed.pages : []
   const normalizedPages = pages.map((pageValue) => {
@@ -70,12 +105,15 @@ const normalizedVisualReview = (parsed: Record<string, unknown> | null): Record<
       const severityValue = typeof issue.severity === 'string' ? issue.severity.toLocaleLowerCase() : ''
       const structural = /clip|overflow|overlap|missing|column|table|frame|box/i.test(type)
       const severity = ['critical', 'high', 'medium', 'minor'].includes(severityValue) ? severityValue : structural ? 'high' : 'minor'
+      const evidence = normalizeEvidence(issue, page.page)
       return {
         ...issue,
         type,
         criterion: requestedCriterion || criterionForIssue(type),
         severity,
-        evidence: issue.evidence ?? issue.rect ?? issue.bbox ?? null,
+        evidence: evidence.evidence,
+        evidenceStatus: evidence.evidenceStatus,
+        evidenceRequired: true,
         page: issue.page ?? page.page ?? null,
       }
     })
