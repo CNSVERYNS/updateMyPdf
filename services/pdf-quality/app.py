@@ -525,7 +525,11 @@ def block_geometry_review(source: fitz.Document, result: fitz.Document) -> dict[
                     overlaps += 1
                     page_issues.append({"type": "block-overlap", "severity": "high", "page": page_index + 1, "message": "Çıktıda iki paragrafın metin alanı üst üste biniyor.", "overlapRatio": round(overlap_ratio, 3)})
 
-        result_lines = [line for block in result_blocks for line in block.get("lineBoxes", [])]
+        result_lines = [
+            {**line, "blockIndex": block_index}
+            for block_index, block in enumerate(result_blocks)
+            for line in block.get("lineBoxes", [])
+        ]
         for left_index, left_line in enumerate(result_lines):
             left_rect = fitz.Rect(left_line["rect"])
             for right_line in result_lines[left_index + 1:]:
@@ -643,7 +647,17 @@ def block_geometry_review_strict(source: fitz.Document, result: fitz.Document) -
                     vertical_overlap = max(0.0, min(left_rect.y1, right_rect.y1) - max(left_rect.y0, right_rect.y0)) / max(1.0, min(left_rect.height, right_rect.height))
                     overlap_ratio = _intersection_ratio(left_rect, right_rect)
                     if horizontal_overlap >= 0.25 and vertical_overlap >= 0.15 and overlap_ratio >= 0.03:
-                        details.append({"type": "line-overlap", "severity": "high", "page": page_index + 1, "message": "Two result text lines overlap.", "overlapRatio": round(overlap_ratio, 3)})
+                        details.append({
+                            "type": "line-overlap",
+                            "severity": "high",
+                            "page": page_index + 1,
+                            "message": "Two result text lines overlap.",
+                            "overlapRatio": round(overlap_ratio, 3),
+                            "leftBlockIndex": left_line.get("blockIndex"),
+                            "rightBlockIndex": right_line.get("blockIndex"),
+                            "leftRect": [round(value, 2) for value in left_rect],
+                            "rightRect": [round(value, 2) for value in right_rect],
+                        })
             return details
 
         source_lines = [line for block in source_blocks for line in block.get("lineBoxes", [])]
