@@ -3,7 +3,7 @@ import base64
 import fitz
 
 import app as quality_app
-from app import adapt_text_layout, extract_layout, inspect_documents, render_preserved_layout, repair_visual_assets
+from app import adapt_text_layout, extract_layout, inspect_documents, region_geometry_review, render_preserved_layout, repair_visual_assets
 
 
 PNG_1X1 = base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=")
@@ -120,6 +120,43 @@ def test_overlapping_result_blocks_cannot_pass_block_geometry_gate():
     assert geometry["overlapCount"] >= 1
     assert geometry["score"] < 90
     assert report["passed"] is False
+
+
+def test_frame_regions_and_contained_text_pass_when_preserved():
+    source_document = fitz.open()
+    source_page = source_document.new_page(width=300, height=400)
+    frame = fitz.Rect(30, 30, 240, 130)
+    source_page.draw_rect(frame, color=(0, 0, 0), width=1)
+    source_page.insert_textbox(fitz.Rect(42, 42, 228, 118), "Text inside a preserved form frame.", fontsize=11)
+    source = source_document.tobytes()
+    source_document.close()
+
+    report = inspect_documents(source, source)
+    regions = report["qualityLayers"]["regionGeometry"]
+    assert regions["score"] == 100
+    assert regions["matchedRegions"] >= 1
+    assert regions["contentOverflows"] == 0
+
+
+def test_frame_region_rejects_text_that_escapes_the_frame():
+    source_document = fitz.open()
+    source_page = source_document.new_page(width=300, height=400)
+    frame = fitz.Rect(30, 30, 240, 130)
+    source_page.draw_rect(frame, color=(0, 0, 0), width=1)
+    source_page.insert_textbox(fitz.Rect(42, 42, 228, 118), "Text inside a preserved form frame.", fontsize=11)
+    source = source_document.tobytes()
+    source_document.close()
+
+    result_document = fitz.open()
+    result_page = result_document.new_page(width=300, height=400)
+    result_page.draw_rect(frame, color=(0, 0, 0), width=1)
+    result_page.insert_text((42, 175), "Text escaped outside the frame.", fontsize=11)
+    result = result_document.tobytes()
+    result_document.close()
+
+    report = region_geometry_review(fitz.open(stream=source, filetype="pdf"), fitz.open(stream=result, filetype="pdf"))
+    assert report["contentOverflows"] >= 1
+    assert report["score"] < 90
 
 
 def test_malformed_pdf_fails():

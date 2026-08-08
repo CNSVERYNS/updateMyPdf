@@ -460,6 +460,220 @@ def _intersection_ratio(left: fitz.Rect, right: fitz.Rect) -> float:
     return _rect_area(intersection) / max(1.0, min(_rect_area(left), _rect_area(right)))
 
 
+def _line_rect(item: tuple[Any, ...]) -> fitz.Rect | None:
+    if not item or item[0] != "l" or len(item) < 3:
+        return None
+    try:
+        return fitz.Rect(item[1], item[2])
+    except Exception:
+        return None
+
+
+def layout_regions(page: fitz.Page) -> list[dict[str, Any]]:
+    """Extract stable visual regions from PDF rectangles and frame lines.
+
+    Many form PDFs do not store a frame as one rectangle; they store four
+    separate line drawings. We reconstruct only closed, axis-aligned regions
+    and keep tiny checkbox rectangles as a separate object class.
+    """
+    regions: list[dict[str, Any]] = []
+    horizontals: list[fitz.Rect] = []
+    verticals: list[fitz.Rect] = []
+
+    for drawing in page.get_drawings():
+        for item in drawing.get("items", []):
+            if item and item[0] == "re" and len(item) > 1:
+                try:
+                    rect = fitz.Rect(item[1])
+                except Exception:
+                    continue
+                if rect.width >= 1 and rect.height >= 1:
+                    kind = "checkbox" if rect.width <= 14 and rect.height <= 14 else "box"
+                    regions.append({"kind": kind, "rect": rect, "source": "rectangle"})
+            line = _line_rect(item)
+            if line is None:
+                continue
+            if line.width >= 8 and line.height <= 1.5:
+                horizontals.append(line)
+            elif line.height >= 8 and line.width <= 1.5:
+                verticals.append(line)
+
+    # Group exact-ish horizontal edges before pairing them. This avoids the
+    # quadratic behavior of comparing every drawing with every other drawing
+    # on dense vector forms.
+    horizontal_groups: dict[tuple[int, int], list[fitz.Rect]] = {}
+    for line in horizontals:
+        key = (round(line.x0 * 2), round(line.x1 * 2))
+        horizontal_groups.setdefault(key, []).append(line)
+
+    def vertical_covers(x: float, top: float, bottom: float) -> bool:
+        return any(
+            abs(line.x0 - x) <= 1.5
+            and line.y0 <= top + 1.5
+            and line.y1 >= bottom - 1.5
+            for line in verticals
+        )
+
+    seen: set[tuple[str, int, int, int, int]] = set()
+    for lines in horizontal_groups.values():
+        ordered = sorted(lines, key=lambda line: line.y0)
+        for top, bottom in zip(ordered, ordered[1:]):
+            if bottom.y0 - top.y0 < 8:
+                continue
+            if not vertical_covers(top.x0, top.y0, bottom.y0) or not vertical_covers(top.x1, top.y0, bottom.y0):
+                continue
+            rect = fitz.Rect(top.x0, top.y0, top.x1, bottom.y0)
+            if rect.width < 20 or rect.height < 8:
+                continue
+            key = ("frame", round(rect.x0), round(rect.y0), round(rect.x1), round(rect.y1))
+            if key in seen:
+                continue
+            seen.add(key)
+            regions.append({"kind": "frame", "rect": rect, "source": "closed-lines"})
+
+    # Keep the model compact and deterministic when a PDF repeats the same
+    # drawing several times in its content stream.
+    unique: dict[tuple[str, int, int, int, int], dict[str, Any]] = {}
+    for region in regions:
+        rect = fitz.Rect(region["rect"])
+        key = (region["kind"], round(rect.x0), round(rect.y0), round(rect.x1), round(rect.y1))
+        unique[key] = {**region, "rect": rect}
+    return sorted(unique.values(), key=lambda region: (region["rect"].y0, region["rect"].x0, region["rect"].width))
+
+
+def region_geometry_review(source: fitz.Document, result: fitz.Document) -> dict[str, Any]:
+    """Compare form boxes/frames and detect text escaping their regions."""
+    issues: list[dict[str, Any]] = []
+    page_scores: list[dict[str, Any]] = []
+    source_count = 0
+    result_count = 0
+    missing = 0
+    geometry_drifts = 0
+    content_overflows = 0
+    matched_regions = 0
+
+    for page_index in range(max(len(source), len(result))):
+        source_page = source[page_index] if page_index < len(source) else None
+        result_page = result[page_index] if page_index < len(result) else None
+        source_regions = layout_regions(source_page) if source_page else []
+        result_regions = layout_regions(result_page) if result_page else []
+        source_regions = [region for region in source_regions if _rect_area(region["rect"]) >= 40]
+        result_regions = [region for region in result_regions if _rect_area(region["rect"]) >= 40]
+        source_count += len(source_regions)
+        result_count += len(result_regions)
+        used: set[int] = set()
+        page_issues: list[dict[str, Any]] = []
+
+        for source_index, source_region in enumerate(source_regions):
+            source_rect = fitz.Rect(source_region["rect"])
+            candidates: list[tuple[float, int, fitz.Rect]] = []
+            for result_index, result_region in enumerate(result_regions):
+                if result_index in used or result_region["kind"] != source_region["kind"]:
+                    continue
+                result_rect = fitz.Rect(result_region["rect"])
+                center_distance = abs(result_rect.x0 - source_rect.x0) + abs(result_rect.y0 - source_rect.y0)
+                size_distance = abs(result_rect.width - source_rect.width) + abs(result_rect.height - source_rect.height)
+                candidates.append((center_distance + size_distance * 0.5, result_index, result_rect))
+            if not candidates:
+                missing += 1
+                page_issues.append({
+                    "criterion": "QC-GEO-007",
+                    "type": "region-missing",
+                    "severity": "high",
+                    "page": page_index + 1,
+                    "regionIndex": source_index,
+                    "regionKind": source_region["kind"],
+                    "rect": [round(value, 2) for value in source_rect],
+                    "message": "Kaynak kutu/frame sonucu PDF'de bulunamadı.",
+                })
+                continue
+            _, result_index, result_rect = min(candidates, key=lambda item: item[0])
+            used.add(result_index)
+            matched_regions += 1
+            x_delta = max(abs(result_rect.x0 - source_rect.x0), abs(result_rect.x1 - source_rect.x1))
+            y_delta = max(abs(result_rect.y0 - source_rect.y0), abs(result_rect.y1 - source_rect.y1))
+            if x_delta > 2 or y_delta > 2:
+                geometry_drifts += 1
+                page_issues.append({
+                    "criterion": "QC-GEO-008",
+                    "type": "region-geometry-drift",
+                    "severity": "high",
+                    "page": page_index + 1,
+                    "regionIndex": source_index,
+                    "regionKind": source_region["kind"],
+                    "sourceRect": [round(value, 2) for value in source_rect],
+                    "resultRect": [round(value, 2) for value in result_rect],
+                    "message": "Kutu/frame sınırları kaynak geometriyle eşleşmiyor.",
+                })
+
+            if source_region["kind"] == "checkbox":
+                continue
+            source_blocks = text_blocks(source_page) if source_page else []
+            result_blocks = text_blocks(result_page) if result_page else []
+            contained_source = [
+                block for block in source_blocks
+                if source_rect.contains(fitz.Point(*block["center"]))
+            ]
+            for block in contained_source:
+                source_center = block["center"]
+                region_result_blocks = [
+                    candidate for candidate in result_blocks
+                    if result_rect.contains(fitz.Point(*candidate["center"]))
+                ]
+                if not result_blocks:
+                    continue
+                candidate_blocks = region_result_blocks or result_blocks
+                result_block = min(
+                    candidate_blocks,
+                    key=lambda candidate: abs(candidate["center"][1] - source_center[1]) + abs(candidate["center"][0] - source_center[0]) * 0.15,
+                )
+                result_block_rect = fitz.Rect(result_block["rect"])
+                tolerance = 1.5
+                if (
+                    result_block_rect.x0 < result_rect.x0 - tolerance
+                    or result_block_rect.y0 < result_rect.y0 - tolerance
+                    or result_block_rect.x1 > result_rect.x1 + tolerance
+                    or result_block_rect.y1 > result_rect.y1 + tolerance
+                ):
+                    content_overflows += 1
+                    page_issues.append({
+                        "criterion": "QC-GEO-009",
+                        "type": "region-content-overflow",
+                        "severity": "high",
+                        "page": page_index + 1,
+                        "regionIndex": source_index,
+                        "sourceRect": [round(value, 2) for value in source_rect],
+                        "resultTextRect": [round(value, 2) for value in result_block_rect],
+                        "message": "Kutu/frame içindeki metin bölge sınırlarının dışına taştı.",
+                    })
+
+        page_score = max(0, 100 - min(60, len([issue for issue in page_issues if issue["type"] == "region-missing"]) * 30) - min(50, len([issue for issue in page_issues if issue["type"] == "region-geometry-drift"]) * 20) - min(60, len([issue for issue in page_issues if issue["type"] == "region-content-overflow"]) * 30))
+        page_scores.append({
+            "page": page_index + 1,
+            "score": page_score,
+            "sourceRegions": len(source_regions),
+            "resultRegions": len(result_regions),
+            "matchedRegions": len(used),
+            "issues": page_issues[:20],
+        })
+        issues.extend(page_issues)
+
+    score = min((page["score"] for page in page_scores), default=100 if len(source) == 0 else 0)
+    return {
+        "score": score,
+        "status": "pass" if score >= PASS_SCORE else "fail",
+        "engine": "deterministic-region-frame-review",
+        "sourceRegions": source_count,
+        "resultRegions": result_count,
+        "matchedRegions": matched_regions,
+        "missingRegions": missing,
+        "geometryDrifts": geometry_drifts,
+        "contentOverflows": content_overflows,
+        "issues": issues[:80],
+        "pageScores": page_scores,
+    }
+
+
 def block_geometry_review(source: fitz.Document, result: fitz.Document) -> dict[str, Any]:
     """Perform a strict one-to-one geometry check for every text paragraph.
 
@@ -890,6 +1104,7 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
     typography_match = typography_consistency(source, result)
     visual_review = visual_layout_review(source, result)
     block_geometry = block_geometry_review_strict(source, result)
+    region_review = region_geometry_review(source, result)
     color_consistency = color_consistency_review(source, result)
     capture_comparison = visual_review.get("captureComparison", {"score": 0, "status": "fail", "pages": []})
     source_text_for_comparison = "\n".join(page.get_text("text") or "" for page in source)
@@ -952,6 +1167,10 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
         for issue in block_geometry["issues"][:5]:
             warnings.append(f"Blok kontrolü: {issue['message']}")
 
+    if region_review["score"] < PASS_SCORE:
+        for issue in region_review["issues"][:5]:
+            warnings.append(f"Region kontrolü: {issue['message']}")
+
     page_score = 100
     page_score -= 35 if len(source_pages) != len(result_pages) else 0
     page_score -= min(25, len(size_differences) * 10)
@@ -979,7 +1198,7 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
     layout_score = 100
     layout_score -= min(25, len(overflow_pages) * 15)
     layout_score -= min(25, len(blank_pages) * 15)
-    layout_score = max(0, min(layout_score, block_geometry["score"]))
+    layout_score = max(0, min(layout_score, block_geometry["score"], region_review["score"]))
 
     quality_layers = {
         "fileIntegrity": {"score": 100, "status": "pass", "sourceBytes": len(source_bytes), "resultBytes": len(result_bytes)},
@@ -992,12 +1211,13 @@ def inspect_documents(source_bytes: bytes, result_bytes: bytes) -> dict[str, Any
         "captureComparison": capture_comparison,
         "colorConsistency": color_consistency,
         "blockGeometry": block_geometry,
+        "regionGeometry": region_review,
         "layout": {"score": layout_score, "status": "pass" if layout_score >= PASS_SCORE else "warning", "sourceTextBlocks": source_metrics["textBlocks"], "resultTextBlocks": result_metrics["textBlocks"], "sourceLinks": source_metrics["links"], "resultLinks": result_metrics["links"], "sourceAnnotations": source_metrics["annotations"], "resultAnnotations": result_metrics["annotations"], "overflowPages": overflow_pages, "blankPages": sorted(set(blank_pages))},
     }
-    weighted_score = round((page_score * 0.15) + (text_score * 0.20) + (typography_score * 0.15) + (color_consistency["score"] * 0.10) + (visual_score * 0.10) + (capture_comparison["score"] * 0.10) + (visual_review["score"] * 0.10) + (layout_score * 0.10))
+    weighted_score = round((page_score * 0.15) + (text_score * 0.20) + (typography_score * 0.15) + (color_consistency["score"] * 0.10) + (visual_score * 0.10) + (capture_comparison["score"] * 0.10) + (visual_review["score"] * 0.10) + (region_review["score"] * 0.05) + (layout_score * 0.05))
     # A document is only as good as its weakest critical layer. This prevents
     # a high weighted average from hiding omitted text or broken layout.
-    score = max(0, min(100, weighted_score, page_score, text_score, typography_score, color_consistency["score"], visual_score, capture_comparison["score"], visual_review["score"], block_geometry["score"], layout_score))
+    score = max(0, min(100, weighted_score, page_score, text_score, typography_score, color_consistency["score"], visual_score, capture_comparison["score"], visual_review["score"], block_geometry["score"], region_review["score"], layout_score))
     source.close()
     result.close()
     return {
@@ -1565,6 +1785,7 @@ def translation_quality_gate(report: dict[str, Any]) -> bool:
     visual_layer = layers.get("visualReview")
     color_layer = layers.get("colorConsistency")
     capture_layer = layers.get("captureComparison")
+    region_layer = layers.get("regionGeometry")
     return (
         report.get("score", 0) >= PASS_SCORE
         and page_integrity_preserved(report)
@@ -1572,6 +1793,7 @@ def translation_quality_gate(report: dict[str, Any]) -> bool:
         and (visual_layer is None or visual_layer.get("score", 0) >= PASS_SCORE)
         and (color_layer is None or color_layer.get("score", 0) >= PASS_SCORE)
         and (capture_layer is None or capture_layer.get("score", 0) >= PASS_SCORE)
+        and (region_layer is None or region_layer.get("score", 0) >= PASS_SCORE)
     )
 
 
