@@ -87,7 +87,7 @@ Kural: Bir kriter kodu tamamlanmadan “tamamlandı” işaretlenmez. Kalite kap
 - [x] QC-TYP-003: Bold/italic/style flag karşılaştırılıyor.
 - [x] QC-TYP-004: Minimum okunabilir font boyutu kontrol ediliyor.
 - [x] QC-TYP-005: Tek satırlık uzun Türkçe label yatay fit ediliyor.
-- [x] QC-TYP-006: Font fallback family metrik olarak en yakın serif/sans family seçmeli.
+- [~] QC-TYP-006: Font fallback family metrik olarak en yakın serif/sans family seçmeli.
 - [ ] QC-TYP-007: Font weight değişimi ayrı kriter olmalı.
 - [ ] QC-TYP-008: Font italic angle değişimi ayrı kriter olmalı.
 - [ ] QC-TYP-009: Letter spacing/character spacing farkı kontrol edilmeli.

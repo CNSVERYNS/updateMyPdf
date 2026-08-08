@@ -1829,25 +1829,21 @@ def font_supports_text(font_bytes: bytes, text: str) -> bool:
 def source_font(page: fitz.Page, document: fitz.Document, span: dict[str, Any], cache: dict[str, str], text: str = "", prefer_condensed: bool = False) -> str:
     font_path = UNICODE_FONT_PATH
     font_name = str(span.get("font", "")).lower()
-    family = font_family_class(font_name)
-    family_root = "DejaVuSerif" if family == "serif" else "DejaVuSans"
-    if family == "serif":
-        font_path = font_path.replace("DejaVuSans", "DejaVuSerif")
     flags = int(span.get("flags", 0) or 0)
     is_bold = "bold" in font_name or bool(flags & 16)
     is_italic = "italic" in font_name or "oblique" in font_name or bool(flags & 2)
     style_key = "regular"
     if is_bold and is_italic:
         style_key = "bold_italic"
-        font_path = font_path.replace(f"{family_root}.ttf", f"{family_root}-BoldOblique.ttf")
+        font_path = font_path.replace("DejaVuSans.ttf", "DejaVuSans-BoldOblique.ttf")
     elif is_bold:
         style_key = "bold"
-        font_path = font_path.replace(f"{family_root}.ttf", f"{family_root}-Bold.ttf")
+        font_path = font_path.replace("DejaVuSans.ttf", "DejaVuSans-Bold.ttf")
     elif is_italic:
         style_key = "italic"
-        font_path = font_path.replace(f"{family_root}.ttf", f"{family_root}-Oblique.ttf")
+        font_path = font_path.replace("DejaVuSans.ttf", "DejaVuSans-Oblique.ttf")
     if prefer_condensed:
-        font_path = font_path.replace(family_root, f"{family_root}Condensed")
+        font_path = font_path.replace("DejaVuSans", "DejaVuSansCondensed")
     requested = str(span.get("font", ""))
     if not prefer_condensed:
         for font in page.get_fonts(full=True):
@@ -1866,7 +1862,7 @@ def source_font(page: fitz.Page, document: fitz.Document, span: dict[str, Any], 
                     return alias
             except Exception:
                 continue
-    unicode_key = f"unicode:{family}:{style_key}:{'condensed' if prefer_condensed else 'normal'}"
+    unicode_key = f"unicode:{style_key}:{'condensed' if prefer_condensed else 'normal'}"
     if unicode_key in cache:
         return cache[unicode_key]
     if os.path.exists(font_path):
